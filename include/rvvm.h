@@ -48,6 +48,14 @@
 #define RVVM_I2C_OC_BASE       0x10030000UL
 #define RVVM_I2C_OC_SIZE       0x00001000UL
 
+/* RISC-V ACLINT — Advanced Core Local Interruptor.
+ * Hart-local mtimecmp[N] at base + N*8; mtime at base + 0x7FF8.
+ * src/devices/riscv-aclint.c. */
+#define RVVM_CLINT_BASE        0x02000000UL
+#define RVVM_CLINT_SIZE        0x00010000UL
+#define RVVM_MTIMECMP(hartid)  (RVVM_CLINT_BASE + (hartid) * 8)
+#define RVVM_MTIME             (RVVM_CLINT_BASE + 0x7FF8)
+
 /* SiFive PLIC — `compatible = "sifive,plic-1.0.0"`.
  * src/devices/riscv-plic.h:16 PLIC_ADDR_DEFAULT.
  * src/devices/riscv-plic.c:17 PLIC_MMIO_SIZE.
