@@ -29,6 +29,7 @@
 #include "audio_pcm.h"
 #include "audio.h"
 #include "audio_internal.h"
+#include "time.h"
 #include "uart.h"
 
 #define EDGE_RING_FRAMES   4800
@@ -125,20 +126,22 @@ void audio_edge_advance(audio_edge_t *e, uint64_t now_cycle) {
     }
     uint32_t frame_samples = (uint32_t)frame_samples_u;
 
-    /* Wait until the host has freed enough room. With a 100 ms ring
-     * the longest plausible wait is ~one ring period; if it goes
-     * longer, the host audio path is broken and the emulator would
-     * stall — bail out instead. */
+    /* Wait until the host has freed enough room. wfi-park in 1 ms
+     * chunks (well under the 20 ms ALSA period so we don't oversleep
+     * past a refill opportunity). Bail after ~50 ms — anything longer
+     * means the host audio path is stalled, in which case dropping the
+     * frame is better than wedging the emulator. */
     {
-        uint32_t free = audio_pcm_writable(&edge_pcm);
-        int       waited = 0;
+        uint32_t free   = audio_pcm_writable(&edge_pcm);
+        int      waited = 0;
         while (free < frame_samples) {
-            if (++waited > 100000) {
-                uart_puts("audio_edge: host not draining; abandoning frame\n");
+            if (waited++ >= 50) {
+                uart_puts("audio_edge: host not draining for >50ms; dropping frame\n");
                 e->n_events = 0;
                 e->total_samples = total_samples_now;
                 return;
             }
+            time_busy_until(time_now() + RVVM_TIME_HZ / 1000);
             free = audio_pcm_writable(&edge_pcm);
         }
     }

@@ -42,4 +42,31 @@ libhal.a: $(OBJS)
 clean:
 	rm -rf build libhal.a
 
-.PHONY: all clean
+# ---------------------------------------------------------------------
+# Convenience: build & run examples from the HAL root.
+#
+#   make run-audio-beep   — codec beep widget; plays C major scale.
+#                           Smallest possible audio path: links only
+#                           audio.o + hda.o (~16 KB ELF).
+#   make run-audio-edge   — emulator-cycle-driven 1-bit speaker;
+#                           sweeps 1 kHz / 440 Hz / 220 Hz / silence
+#                           against a synthetic 3.5 MHz Z80-like clock.
+#   make run-audio-pcm    — raw PCM streaming; alternates 480 Hz / 240
+#                           Hz / silence with continuous-feed pattern.
+#
+# All require RVVM started with -hda_test (we pass that automatically).
+# Defaults to `rvvm` on PATH; override with `make run-audio-beep RVVM=…`.
+
+run-audio-beep:
+	$(MAKE) -C examples/audio-beep run
+
+run-audio-edge:
+	$(MAKE) -C examples/audio-edge run
+
+run-audio-pcm:
+	$(MAKE) -C examples/audio-pcm run
+
+run-probe:
+	$(MAKE) -C examples/probe run
+
+.PHONY: all clean run-audio-beep run-audio-edge run-audio-pcm run-probe

@@ -26,6 +26,9 @@
 #define EMULATOR_HZ      3500000ULL    /* fictional Z80-like clock */
 #define FRAME_HZ         50            /* fictional vblank rate */
 #define CYCLES_PER_FRAME (EMULATOR_HZ / FRAME_HZ)
+#define TICKS_PER_FRAME  (RVVM_TIME_HZ / FRAME_HZ)   /* wall-clock pacing must
+                                                        match emulator pacing,
+                                                        else audio drifts */
 #define LEVEL_HIGH       0x4000
 #define LEVEL_LOW       -0x4000
 
@@ -41,7 +44,7 @@ static void run_tone(uint64_t *cycle, int duration_seconds, uint32_t tone_hz) {
     int16_t  level           = LEVEL_LOW;
     int      n_frames        = duration_seconds * FRAME_HZ;
 
-    uint64_t deadline = time_now() + time_ticks_per_frame();
+    uint64_t deadline = time_now() + TICKS_PER_FRAME;
     for (int f = 0; f < n_frames; f++) {
         uint64_t frame_end = *cycle + CYCLES_PER_FRAME;
 
@@ -58,7 +61,7 @@ static void run_tone(uint64_t *cycle, int duration_seconds, uint32_t tone_hz) {
         audio_edge_advance(&edge, *cycle);
 
         time_busy_until(deadline);
-        deadline += time_ticks_per_frame();
+        deadline += TICKS_PER_FRAME;
     }
 }
 

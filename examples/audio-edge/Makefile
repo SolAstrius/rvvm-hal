@@ -3,6 +3,9 @@ TARGET   := riscv64-freestanding-none
 CC       := zig cc -target $(TARGET)
 OBJCOPY  := llvm-objcopy
 
+RVVM     ?= $(shell command -v rvvm 2>/dev/null || \
+                    echo /home/sol/repos/RVVM/release.linux.x86_64/rvvm_x86_64)
+
 CFLAGS   := -Os -ffreestanding -fno-stack-protector -fno-pie \
             -mcmodel=medany -nostdlib \
             -Wall -Wextra -Wno-unused-parameter \
@@ -29,7 +32,7 @@ firmware.bin: firmware.elf
 	@printf '\nBuilt %s (%s bytes)\n' "$@" "$$(stat -c %s $@)"
 
 run: firmware.bin
-	rvvm firmware.bin -nogui -nonet -hda_test
+	$(RVVM) firmware.bin -nogui -nonet -hda_test
 
 clean:
 	rm -rf build firmware.elf firmware.bin

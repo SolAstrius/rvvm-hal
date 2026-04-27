@@ -1,13 +1,11 @@
-# audio-pcm — minimal HDA PCM streaming demo. Same toolchain shape as
-# examples/probe/. Fires up the HDA controller, allocates a 4800-frame
-# (100 ms) ring, fills it with audio, and lets RVVM's stream worker
-# loop the ring forever.
-
 HAL      := ../..
 TARGET   := riscv64-freestanding-none
 CC       := zig cc -target $(TARGET)
 OBJCOPY  := llvm-objcopy
 
+# Match the scev-cores convention: prefer rvvm on PATH, fall back to
+# the user's local build location. Override on the command line:
+#   make run RVVM=/path/to/rvvm
 RVVM     ?= $(shell command -v rvvm 2>/dev/null || \
                     echo /home/sol/repos/RVVM/release.linux.x86_64/rvvm_x86_64)
 
@@ -36,9 +34,6 @@ firmware.bin: firmware.elf
 	$(OBJCOPY) -O binary $< $@
 	@printf '\nBuilt %s (%s bytes)\n' "$@" "$$(stat -c %s $@)"
 
-# Convenience: the user's RVVM build expects -hda_test to attach the
-# device. Without that flag the firmware will print "device not found"
-# and spin idle.
 run: firmware.bin
 	$(RVVM) firmware.bin -nogui -nonet -hda_test
 
