@@ -1,0 +1,6 @@
+.direnv/
+build/
+libhal.a
+*.o
+result
+result-*
