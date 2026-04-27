@@ -28,7 +28,8 @@
 #include "time.h"
 #include "fdt.h"
 #include "pci.h"
-#include "hda.h"
+#include "audio.h"
+#include "audio_pcm.h"
 #include "rvvm.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -95,10 +96,10 @@ static int16_t gen_silence(uint32_t p) {
  * Each pass: query writable, fill that region, advance wp. When the
  * ring is full (writable == 0), busy-wait briefly so the host worker
  * can drain a chunk. */
-static void feed_until(hda_pcm_t *p, uint64_t deadline,
+static void feed_until(audio_pcm_t *p, uint64_t deadline,
                        gen_fn gen, uint32_t *phase) {
     while (time_now() < deadline) {
-        uint32_t free = hda_pcm_writable(p);
+        uint32_t free = audio_pcm_writable(p);
         if (free == 0) {
             /* Ring full — sleep about 1 ms (equivalent to ~48 frames
              * at 48 kHz). Worker will have made progress by then. */
@@ -113,7 +114,7 @@ static void feed_until(hda_pcm_t *p, uint64_t deadline,
             uint32_t idx = (p->wp_frames + i) % p->ring_frames;
             ring[idx] = gen((*phase)++);
         }
-        hda_pcm_advance(p, free);
+        audio_pcm_advance(p, free);
     }
 }
 
@@ -133,8 +134,8 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
         pci_init((uintptr_t)p_at);
     }
 
-    if (!hda_init()) {
-        uart_puts("hda_init failed — start RVVM with -hda_test\n");
+    if (!audio_init()) {
+        uart_puts("audio_init failed — start RVVM with -hda_test\n");
         for (;;) __asm__ volatile ("wfi");
     }
 
@@ -144,14 +145,14 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
         for (uint32_t i = 0; i < RING_FRAMES; i++) ring[i] = gen_480(phase++);
     }
 
-    hda_pcm_t pcm;
-    if (!hda_pcm_init(&pcm, ring, RING_FRAMES, BDL_ENTRIES, SAMPLE_RATE)) {
-        uart_puts("hda_pcm_init failed\n");
+    audio_pcm_t pcm;
+    if (!audio_pcm_open(&pcm, ring, RING_FRAMES, BDL_ENTRIES, SAMPLE_RATE)) {
+        uart_puts("audio_pcm_open failed\n");
         for (;;) __asm__ volatile ("wfi");
     }
     /* Tell the HAL the ring is already full — wp lands at N-1, leaving
      * one sentinel slot. writable() returns 0 until LPIB advances. */
-    hda_pcm_advance(&pcm, RING_FRAMES - 1);
+    audio_pcm_advance(&pcm, RING_FRAMES - 1);
 
     uart_puts("\nplaying (continuous-feed pattern, no in-place overwrite):\n");
     for (int round = 0; round < 3; round++) {
@@ -179,7 +180,7 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
     }
 
     uart_puts("\nstopping stream.\n");
-    hda_pcm_stop(&pcm);
+    audio_pcm_close(&pcm);
 
     uart_puts("done. spinning forever.\n");
     for (;;) __asm__ volatile ("wfi");
