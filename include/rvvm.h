@@ -128,8 +128,38 @@
 #define HDA_VERB_GET_PARAMETER       0xF00U
 #define HDA_VERB_GET_AMP_GAIN_MUTE   0x00BU
 #define HDA_VERB_SET_AMP_GAIN_MUTE   0x003U
+#define HDA_VERB_GET_CONV_FMT        0x00AU
+#define HDA_VERB_SET_CONV_FMT        0x002U
+#define HDA_VERB_GET_CONV_STREAM     0xF06U
+#define HDA_VERB_SET_CONV_STREAM     0x706U
 #define HDA_VERB_GET_BEEP_GENERATION 0xF0AU
 #define HDA_VERB_SET_BEEP_GENERATION 0x70AU
+
+/* HDA output stream descriptor — single output stream at index 1 (the
+ * input slot at index 0 is reserved per HDA_PARAM_NO_IN=1). MMIO
+ * offset = 0x80 + STREAM_INDEX * 0x20. sound-hda.c §3.3.34, §3.3.35. */
+#define RVVM_HDA_OUT_SD_BASE      0xA0U
+#define HDA_SD_CTL                0x00   /* 24-bit; bit 1 RUN, bits 23:20 STRM */
+#define HDA_SD_STS                0x03
+#define HDA_SD_LPIB               0x04   /* RO; bytes consumed within CBL */
+#define HDA_SD_CBL                0x08   /* total cyclic buffer length, bytes */
+#define HDA_SD_LVI                0x0C   /* last valid BDL index */
+#define HDA_SD_FIFOS              0x10
+#define HDA_SD_FMT                0x12
+#define HDA_SD_BDPL               0x18   /* BDL pointer low; 128-B aligned */
+#define HDA_SD_BDPU               0x1C
+
+/* SDnFMT bit packing (§7.3.3.10):
+ *   bits 3:0    channels - 1
+ *   bits 6:4    BITS code (1 = 16-bit; 0 = 8-bit; 3 = 24-bit; 4 = 32-bit)
+ *   bits 10:8   divisor - 1
+ *   bits 13:11  multiplier - 1
+ *   bit  14     base rate (0 = 48 kHz, 1 = 44.1 kHz)
+ *   bit  15     0 = PCM, 1 = non-PCM. */
+#define HDA_FMT_16BIT_MONO_48K    0x0010U   /* base=48, mult/div=1, bits=16, ch=1 */
+#define HDA_FMT_16BIT_MONO_44K1   0x4010U
+#define HDA_FMT_16BIT_MONO_96K    0x0810U   /* base=48, mult=2, div=1 */
+#define HDA_FMT_16BIT_MONO_88K2   0x4810U   /* base=44.1, mult=2, div=1 */
 
 /* AMP_GAIN_MUTE payload bits. */
 #define HDA_AMP_OUTPUT            0x8000U
