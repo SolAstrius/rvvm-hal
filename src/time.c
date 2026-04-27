@@ -36,6 +36,17 @@ void time_busy_until(uint64_t deadline) {
     volatile uint64_t *mtimecmp =
         (volatile uint64_t *)(clint_base + 0x4000);
     uintptr_t mtie = 1ULL << 7;   /* mie.MTIE */
+    uintptr_t mie  = 1ULL << 3;   /* mstatus.MIE */
+
+    /* If the firmware has globally enabled M-mode interrupts (irq.c
+     * calls this for UART/PLIC), our MTIE will trap to the irq.c
+     * dispatcher, which has no handler for MTIP and will disable MTIE
+     * to break the loop — defeating our wake mechanism. Clear
+     * mstatus.MIE for the duration of the wait so MTIP wakes wfi but
+     * doesn't trap; restore it after. */
+    uintptr_t old_status;
+    __asm__ volatile ("csrrc %0, mstatus, %1" : "=r"(old_status) : "r"(mie));
+
     __asm__ volatile ("csrs mie, %0" :: "r"(mtie));
     while (time_now() < deadline) {
         *mtimecmp = deadline;
@@ -43,4 +54,8 @@ void time_busy_until(uint64_t deadline) {
     }
     *mtimecmp = (uint64_t)-1;
     __asm__ volatile ("csrc mie, %0" :: "r"(mtie));
+
+    if (old_status & mie) {
+        __asm__ volatile ("csrs mstatus, %0" :: "r"(mie));
+    }
 }

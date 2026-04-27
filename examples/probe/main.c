@@ -12,7 +12,7 @@
 #include "gfx.h"
 #include "i2c.h"
 #include "hid.h"
-#include "ata.h"
+#include "nvme.h"
 #include "irq.h"
 #include "rvvm.h"
 
@@ -112,17 +112,17 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
         uart_puts("gfx: no display backend (try -bochs_display or -res WxH).\n");
     }
 
-    /* 4. ATA. */
-    ata_t disk;
-    if (ata_init(&disk)) {
-        uint8_t buf[16];
-        if (ata_read(&disk, 0, buf, 1) == 1) {
-            uart_puts("ata: first 16 bytes of sector 0:\n  ");
+    /* 4. NVMe. */
+    static nvme_t disk;
+    if (nvme_init(&disk)) {
+        static uint8_t buf[NVME_LBA_SIZE] __attribute__((aligned(NVME_PAGE_SIZE)));
+        if (nvme_read(&disk, 0, buf, 1) == 1) {
+            uart_puts("nvme: first 16 bytes of LBA 0:\n  ");
             for (int i = 0; i < 16; i++) uart_printf("%x ", (uint64_t)buf[i]);
             uart_putc('\n');
         }
     } else {
-        uart_puts("ata: no disk attached (start RVVM with -ata <file>).\n");
+        uart_puts("nvme: no disk attached (start RVVM with -nvme <file>).\n");
     }
 
     /* 5. IRQ subsystem — wire UART RX-data through the PLIC. */
