@@ -58,8 +58,9 @@ int hid_kb_poll(hid_keyboard_t *kb,
      * traced via the cb in main.c. */
     static bool seen_one;
     if (!seen_one && len != 0) {
+        /* uart's %x already adds the "0x" prefix; formats stay bare. */
         uart_printf("hid: first non-empty report (len=%u): "
-                    "%x %x  mod=%x  res=%x  keys=%x %x %x %x %x %x\n",
+                    "len=%x %x  mod=%x  res=%x  keys=%x %x %x %x %x %x\n",
                     (uint64_t)len,
                     (uint64_t)buf[0], (uint64_t)buf[1],
                     (uint64_t)buf[2], (uint64_t)buf[3],
