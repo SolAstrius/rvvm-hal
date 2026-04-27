@@ -41,11 +41,34 @@ int hid_kb_poll(hid_keyboard_t *kb,
 
     if (!i2c_write_then_read(kb->i2c_addr, reg_sel, 2,
                              buf, sizeof(buf))) {
-        return 0;        /* slave busy / no report — try next frame */
+        /* Log NACK / timeout once so we don't spam the UART at 60 Hz. */
+        static bool warned;
+        if (!warned) {
+            uart_printf("hid: i2c xact to addr 0x%x failed (NACK/timeout)\n",
+                        (uint64_t)kb->i2c_addr);
+            warned = true;
+        }
+        return 0;
     }
 
-    /* Length=0 means the input queue was empty when we read. */
     uint16_t len = buf[0] | ((uint16_t)buf[1] << 8);
+
+    /* Dump the first non-empty report so we can see whether the
+     * i2c-hid pipe works at all. After that, real key events are
+     * traced via the cb in main.c. */
+    static bool seen_one;
+    if (!seen_one && len != 0) {
+        uart_printf("hid: first non-empty report (len=%u): "
+                    "%x %x  mod=%x  res=%x  keys=%x %x %x %x %x %x\n",
+                    (uint64_t)len,
+                    (uint64_t)buf[0], (uint64_t)buf[1],
+                    (uint64_t)buf[2], (uint64_t)buf[3],
+                    (uint64_t)buf[4], (uint64_t)buf[5],
+                    (uint64_t)buf[6], (uint64_t)buf[7],
+                    (uint64_t)buf[8], (uint64_t)buf[9]);
+        seen_one = true;
+    }
+
     if (len == 0) return 0;
     if (len > sizeof(buf)) len = sizeof(buf);
 
