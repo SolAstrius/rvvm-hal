@@ -284,17 +284,14 @@ uint32_t hda_pcm_writable(const hda_pcm_t *p) {
     if (!p->running) return 0;
     uint32_t rd = hda_pcm_position(p);
     uint32_t wp = p->wp_frames;
-    /* Distance forward from wp to rd (the "to-be-played" region we
-     * must NOT overwrite). Wrap-aware. Reserve one frame to disambiguate
-     * full vs empty. */
-    uint32_t inflight = (wp >= rd)
-                      ? (p->ring_frames - (wp - rd))
-                      : (rd - wp);
-    if (inflight == 0) inflight = p->ring_frames;
-    /* `inflight` includes the wp slot itself when wp == rd; treat as
-     * "fully drained, all empty." Free = inflight - 1 to leave a
-     * sentinel slot. */
-    return inflight - 1;
+    /* Standard ring: in-flight = (wp - rd + N) % N. Free slots are
+     * everything else minus one sentinel slot to disambiguate
+     * "wp == rd && empty" from "wp == rd && full" (we always treat
+     * wp == rd as empty). The caller-pre-fill convention is then
+     *   advance(ring_frames - 1)
+     * after init — that pegs wp = N-1, rd = 0, in-flight = N-1, free = 0. */
+    uint32_t inflight = (wp + p->ring_frames - rd) % p->ring_frames;
+    return p->ring_frames - 1 - inflight;
 }
 
 void hda_pcm_advance(hda_pcm_t *p, uint32_t frames) {

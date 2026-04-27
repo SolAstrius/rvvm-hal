@@ -37,10 +37,22 @@ void hda_beep(uint8_t divider);
  *
  *      static int16_t ring[4800] __attribute__((aligned(128)));
  *      hda_pcm_t pcm;
+ *
+ *      // Pre-fill ring BEFORE init so the host's first BDL fetch
+ *      // sees real audio rather than BSS zeros — otherwise you'll
+ *      // hear ~one BDL period of silence at startup before the feed
+ *      // loop catches up.
+ *      fill_with_audio(ring, 4800);
+ *
  *      hda_pcm_init(&pcm, ring, 4800, 4, 48000);
- *      // fill ring with audio
- *      hda_pcm_advance(&pcm, 4800);   // commit: host can play it
- *      // ... refill as hda_pcm_writable() returns space
+ *      hda_pcm_advance(&pcm, 4800 - 1);   // mark as pre-filled
+ *
+ *      // Steady-state feed: writable returns 0 until the host has
+ *      // drained some, then we top up. Keep wp ahead of LPIB.
+ *      while (...) {
+ *          uint32_t free = hda_pcm_writable(&pcm);
+ *          if (free) { fill_more(...); hda_pcm_advance(&pcm, free); }
+ *      }
  *      hda_pcm_stop(&pcm);
  *
  *  Format is fixed: 16-bit signed little-endian, 1 channel (mono).
