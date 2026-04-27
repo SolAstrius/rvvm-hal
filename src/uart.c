@@ -80,6 +80,15 @@ char uart_getc(void) {
     return (char)c;
 }
 
+void uart_irq_rx_enable(bool enable) {
+    /* IER bit 0 = received-data-available interrupt. RVVM's NS16550A
+     * raises it whenever LSR.DR is set; reading RBR clears DR (and
+     * thus the IRQ). Caller must wire up the trap path separately
+     * via irq_register / irq_enable / irq_global_enable. */
+    uint8_t ier = r(UART_IER);
+    w(UART_IER, enable ? (ier | 0x01) : (ier & ~0x01));
+}
+
 static const char hex_digits[] = "0123456789abcdef";
 
 void uart_put_hex8(uint8_t v) {

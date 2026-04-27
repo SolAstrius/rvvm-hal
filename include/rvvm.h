@@ -48,6 +48,39 @@
 #define RVVM_I2C_OC_BASE       0x10030000UL
 #define RVVM_I2C_OC_SIZE       0x00001000UL
 
+/* SiFive PLIC — `compatible = "sifive,plic-1.0.0"`.
+ * src/devices/riscv-plic.h:16 PLIC_ADDR_DEFAULT.
+ * src/devices/riscv-plic.c:17 PLIC_MMIO_SIZE.
+ *
+ * Layout (MMIO offsets):
+ *   0x000000 + irq*4         : interrupt priority (1..7; 0 disables)
+ *   0x001000 + reg*4         : pending bits, 32 IRQs per reg
+ *   0x002000 + ctx*0x80
+ *           + reg*4          : enable bits per (ctx, irq word)
+ *   0x200000 + ctx*0x1000    : threshold (only IRQ prio > threshold is delivered)
+ *   0x200004 + ctx*0x1000    : claim/complete (read = claim, write = complete)
+ *
+ * Context ↔ hart layout (riscv-plic.c:43-54):
+ *   ctx = (hartid << 1) | (mode==S ? 1 : 0)
+ * So for hart 0 in M-mode (our firmware), ctx = 0.
+ *
+ * IRQ source numbers are allocated dynamically by the host devices in
+ * the order they're attached (`rvvm_alloc_irq`), so we discover them
+ * via FDT (`interrupts` property of each device's node) or via PCI
+ * config offset 0x3C (Interrupt Line — RVVM auto-fills with the PLIC
+ * source #). */
+#define RVVM_PLIC_BASE         0x0C000000UL
+#define RVVM_PLIC_SIZE         0x04000000UL
+#define RVVM_PLIC_SRC_LIMIT    64           /* PLIC_SRC_LIMIT in riscv-plic.c */
+#define RVVM_PLIC_PRIO_OFF     0x000000U
+#define RVVM_PLIC_PENDING_OFF  0x001000U
+#define RVVM_PLIC_ENABLE_OFF   0x002000U    /* + ctx*0x80 + word*4 */
+#define RVVM_PLIC_ENABLE_STRIDE 0x80U
+#define RVVM_PLIC_CTX_OFF      0x200000U    /* + ctx*0x1000 */
+#define RVVM_PLIC_CTX_STRIDE   0x1000U
+#define RVVM_PLIC_CTX_THRESHOLD 0x000U
+#define RVVM_PLIC_CTX_CLAIM     0x004U      /* read = claim, write = complete */
+
 /* ======================================================================
  *  Timer / clocksource  (src/rvvm.c:569 RVVM_OPT_TIME_FREQ)
  * ====================================================================== */

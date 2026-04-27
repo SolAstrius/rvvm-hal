@@ -11,6 +11,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdarg.h>
+#include <stdbool.h>
 
 /* Initialise the UART driver. Pass the MMIO base address discovered
  * via FDT (compatible = "ns16550a"). If `base` is 0, falls back to
@@ -40,3 +41,10 @@ void uart_vprintf(const char *fmt, va_list ap);
 /* Input. */
 int  uart_getc_nb(void);   /* -1 if no char available */
 char uart_getc   (void);   /* blocks */
+
+/* Enable / disable the NS16550A's RX-data-available interrupt (IER
+ * bit 0). Caller wires the IRQ source — discovered via the uart's
+ * FDT `interrupts` property — through irq_register / irq_enable /
+ * irq_global_enable. The handler must read RBR (e.g. uart_getc_nb)
+ * to drop LSR.DR and clear the device-side pending bit. */
+void uart_irq_rx_enable(bool enable);
