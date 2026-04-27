@@ -72,6 +72,43 @@
  * src/devices/sound-hda.c:21-23. */
 #define RVVM_PCI_ID_HDA           0x501113F6U
 
+/* Intel HDA controller register offsets (within BAR0).
+ * src/devices/sound-hda.c lines 27-56. */
+#define HDA_REG_GCAP              0x00
+#define HDA_REG_GCTL              0x08   /* CRST in bit 0 */
+#define HDA_REG_STATESTS          0x0E   /* codec discovery bitmap */
+#define HDA_REG_CORBLBASE         0x40
+#define HDA_REG_CORBUBASE         0x44
+#define HDA_REG_CORBWP            0x48
+#define HDA_REG_CORBRP            0x4A
+#define HDA_REG_CORBCTL           0x4C   /* DMA run = bit 1 */
+#define HDA_REG_CORBSIZE          0x4E
+#define HDA_REG_RIRBLBASE         0x50
+#define HDA_REG_RIRBUBASE         0x54
+#define HDA_REG_RIRBWP            0x58   /* write 1<<15 to reset */
+#define HDA_REG_RINTCNT           0x5A
+#define HDA_REG_RIRBCTL           0x5C
+#define HDA_REG_RIRBSIZE          0x5E
+
+/* Codec verbs we use. The Beep Generator widget was added to RVVM in
+ * commit a2a4255 on 2026-04-27 (sound-hda.c §7.2.3.8 / §7.3.3.31). */
+#define HDA_VERB_GET_PARAMETER       0xF00U
+#define HDA_VERB_GET_AMP_GAIN_MUTE   0x00BU
+#define HDA_VERB_SET_AMP_GAIN_MUTE   0x003U
+#define HDA_VERB_GET_BEEP_GENERATION 0xF0AU
+#define HDA_VERB_SET_BEEP_GENERATION 0x70AU
+
+/* AMP_GAIN_MUTE payload bits. */
+#define HDA_AMP_OUTPUT            0x8000U
+#define HDA_AMP_LEFT              0x2000U
+#define HDA_AMP_RIGHT             0x1000U
+#define HDA_AMP_MUTE              0x0080U
+
+/* Beep widget on NID 4. Frequency = 48000 / (4 * divider) Hz; range
+ * 1..255 covers ~47 Hz to 12 kHz. divider=27 ≈ 444 Hz (close to A4). */
+#define RVVM_HDA_BEEP_NID         4
+#define RVVM_HDA_BEEP_DIV_440HZ   27
+
 /* Realtek RTL8168 — vendor 0x10EC, device 0x8168.
  * src/devices/rtl8169.c:714-715. */
 #define RVVM_PCI_ID_RTL8168       0x816810ECU
