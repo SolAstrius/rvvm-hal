@@ -23,10 +23,10 @@ void i2c_init(uintptr_t base) {
                 (uint64_t)r(I2C_OC_REG_CTR),
                 (uint64_t)r(I2C_OC_REG_CRSR));
 
-    /* Trace the first 6 cmds so we can see exactly where address-write
-     * goes wrong (if it does). 6 = STA+WR addr, WR reg.lo, WR reg.hi,
-     * STA+WR addr_r, RD byte 0, STO. */
-    i2c_trace = 6;
+    /* Trace the first full HID poll: 1 (STA+WR addr) + 2 (WR reg lo/hi)
+     * + 1 (STA+WR addr_r) + 10 (RD bytes) + 1 (STO) = 15 cmds. Plus a
+     * couple of slack for any retry. */
+    i2c_trace = 18;
 }
 
 static bool i2c_cmd(uint8_t cmd) {
