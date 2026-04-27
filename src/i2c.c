@@ -16,17 +16,6 @@ void i2c_init(uintptr_t base) {
     /* Disable IRQs (we poll), enable the core. */
     w(I2C_OC_REG_CTR, I2C_OC_CTR_EN);
 
-    /* Sanity probe: read CTR back and dump it, plus initial status,
-     * so we can tell whether the controller is even listening. */
-    uart_printf("i2c: ctr_w=%x ctr_r=%x crsr=%x  (expect ctr=0x80)\n",
-                (uint64_t)I2C_OC_CTR_EN,
-                (uint64_t)r(I2C_OC_REG_CTR),
-                (uint64_t)r(I2C_OC_REG_CRSR));
-
-    /* Trace the first full HID poll: 1 (STA+WR addr) + 2 (WR reg lo/hi)
-     * + 1 (STA+WR addr_r) + 10 (RD bytes) + 1 (STO) = 15 cmds. Plus a
-     * couple of slack for any retry. */
-    i2c_trace = 18;
 }
 
 static bool i2c_cmd(uint8_t cmd) {
@@ -49,45 +38,55 @@ static bool i2c_cmd(uint8_t cmd) {
     return !(s & I2C_OC_STA_NACK);
 }
 
+/* STOP is fire-and-forget — there's no slave ACK for it. RVVM (per
+ * the OpenCores semantics) sets the ACK status bit (= NACK indicator)
+ * at the top of every CRSR write and clears it only on successful WR
+ * or RD. STO doesn't touch ACK, so the bit stays set after STOP and
+ * a naive `if (!i2c_cmd(STO))` reads as NACK and drops the valid data
+ * the read phase already collected. Just issue STO and ignore. */
+static void i2c_stop(void) { i2c_cmd(I2C_OC_CMD_STO); }
+
 bool i2c_write(uint8_t addr, const uint8_t *data, size_t len) {
+    bool ok = false;
     w(I2C_OC_REG_TXRXR, (uint8_t)((addr << 1) | 0));
-    if (!i2c_cmd(I2C_OC_CMD_STA | I2C_OC_CMD_WR)) goto fail;
+    if (!i2c_cmd(I2C_OC_CMD_STA | I2C_OC_CMD_WR)) goto out;
     for (size_t i = 0; i < len; i++) {
         w(I2C_OC_REG_TXRXR, data[i]);
-        if (!i2c_cmd(I2C_OC_CMD_WR)) goto fail;
+        if (!i2c_cmd(I2C_OC_CMD_WR)) goto out;
     }
-    return i2c_cmd(I2C_OC_CMD_STO);
-fail:
-    /* Always drive STOP to release the bus, even on NACK. */
-    i2c_cmd(I2C_OC_CMD_STO);
-    return false;
+    ok = true;
+out:
+    i2c_stop();
+    return ok;
 }
 
 bool i2c_write_then_read(uint8_t addr,
                          const uint8_t *wdata, size_t wlen,
                          uint8_t *rdata, size_t rlen) {
+    bool ok = false;
+
     /* Write phase. */
     w(I2C_OC_REG_TXRXR, (uint8_t)((addr << 1) | 0));
-    if (!i2c_cmd(I2C_OC_CMD_STA | I2C_OC_CMD_WR)) goto fail;
+    if (!i2c_cmd(I2C_OC_CMD_STA | I2C_OC_CMD_WR)) goto out;
     for (size_t i = 0; i < wlen; i++) {
         w(I2C_OC_REG_TXRXR, wdata[i]);
-        if (!i2c_cmd(I2C_OC_CMD_WR)) goto fail;
+        if (!i2c_cmd(I2C_OC_CMD_WR)) goto out;
     }
 
     /* Repeated start with read direction. */
     w(I2C_OC_REG_TXRXR, (uint8_t)((addr << 1) | 1));
-    if (!i2c_cmd(I2C_OC_CMD_STA | I2C_OC_CMD_WR)) goto fail;
+    if (!i2c_cmd(I2C_OC_CMD_STA | I2C_OC_CMD_WR)) goto out;
 
     /* Read phase. NACK on the final byte signals end-of-read to slave. */
     for (size_t i = 0; i < rlen; i++) {
         uint8_t cmd = I2C_OC_CMD_RD;
         if (i + 1 == rlen) cmd |= I2C_OC_CMD_NACK;
-        if (!i2c_cmd(cmd)) goto fail;
+        if (!i2c_cmd(cmd)) goto out;
         rdata[i] = r(I2C_OC_REG_TXRXR);
     }
+    ok = true;
 
-    return i2c_cmd(I2C_OC_CMD_STO);
-fail:
-    i2c_cmd(I2C_OC_CMD_STO);
-    return false;
+out:
+    i2c_stop();
+    return ok;
 }
