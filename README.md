@@ -103,6 +103,28 @@ nix develop ../.. --command make
 rvvm firmware.bin -bochs_display
 ```
 
+## Real-world consumer
+
+[**SolAstrius/scev-chip-8**](https://github.com/SolAstrius/scev-chip-8)
+— a complete CHIP-8 interpreter as bare-metal RISC-V firmware,
+built on top of this HAL. ~480 lines of CHIP-8-specific code
+(interpreter, ROM, orchestration); everything else (UART, FDT, PCI,
+Bochs Display, I²C, HID, ATA) comes from rvvm-hal. Boots with the
+embedded IBM Logo splash, or loads any `.ch8` ROM mounted via
+`-ata`. Keyboard input via the GUI window is wired through HID.
+
+It pins this repo via submodule, so it's a working reference for
+the consumption pattern in the previous section.
+
+## Versioning
+
+Git-tagged. Pin a specific version in your submodule for stability:
+
+```sh
+git -C vendor/rvvm-hal checkout v0.1.0
+git add vendor/rvvm-hal && git commit -m "pin rvvm-hal v0.1.0"
+```
+
 ## License
 
 MIT-ish. Treat as public-domain reference code.
