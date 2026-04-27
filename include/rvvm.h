@@ -48,6 +48,19 @@
 #define RVVM_I2C_OC_BASE       0x10030000UL
 #define RVVM_I2C_OC_SIZE       0x00001000UL
 
+/* RISC-V CLINT — `compatible = "sifive,clint0"`.
+ * src/devices/riscv-aclint.h:15 CLINT_ADDR_DEFAULT.
+ *
+ * Layout (SiFive convention, NOT in FDT — implied by the compat string):
+ *   0x0000 + hartid*4   MSWI   msip[hartid]      (4-byte ops only)
+ *   0x4000 + hartid*8   MTIMER mtimecmp[hartid]  (8-byte ops only)
+ *   0xBFF8              MTIMER mtime
+ *
+ * Default address — firmware should discover via FDT and pass to
+ * time_init(); this is the fallback. */
+#define RVVM_CLINT_BASE        0x02000000UL
+#define RVVM_CLINT_SIZE        0x00010000UL
+
 /* SiFive PLIC — `compatible = "sifive,plic-1.0.0"`.
  * src/devices/riscv-plic.h:16 PLIC_ADDR_DEFAULT.
  * src/devices/riscv-plic.c:17 PLIC_MMIO_SIZE.
@@ -85,8 +98,11 @@
  *  Timer / clocksource  (src/rvvm.c:569 RVVM_OPT_TIME_FREQ)
  * ====================================================================== */
 
+/* RVVM's stock tick rate. Used as the time.c default if time_init()
+ * isn't called — but firmware should always read time_hz() instead,
+ * after discovering /cpus/timebase-frequency from FDT, so non-default
+ * RVVM machines work too. */
 #define RVVM_TIME_HZ           10000000ULL    /* mtime ticks at 10 MHz */
-#define RVVM_TICKS_PER_FRAME   (RVVM_TIME_HZ / 60)   /* ~166 666 / frame */
 
 /* ======================================================================
  *  PCI device IDs that RVVM emulates

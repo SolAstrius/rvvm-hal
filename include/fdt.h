@@ -62,3 +62,14 @@ uint64_t fdt_read_be64(const void *data, uint32_t off);
  * Returns false if the property is missing or the index is out of range. */
 bool fdt_node_reg64(const fdt_t *fdt, uint32_t node_off, uint32_t idx,
                     uint64_t *out_addr, uint64_t *out_size);
+
+/* Find the first node whose name (the bytes after FDT_BEGIN_NODE, before
+ * any '@' unit-address suffix) matches `name`. Used to locate well-known
+ * nodes like `/cpus` and `/memory` that have no `compatible`. Returns
+ * the node offset, or UINT32_MAX. */
+uint32_t fdt_find_node_named(const fdt_t *fdt, const char *name);
+
+/* Read a single big-endian uint32 property. Returns false if the prop
+ * is missing or its length is < 4. */
+bool fdt_node_prop_u32(const fdt_t *fdt, uint32_t node_off,
+                       const char *name, uint32_t *out);

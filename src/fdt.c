@@ -148,6 +148,41 @@ uint32_t fdt_find_compatible(const fdt_t *fdt, const char *compat) {
     return UINT32_MAX;
 }
 
+uint32_t fdt_find_node_named(const fdt_t *fdt, const char *name) {
+    /* Same shape as fdt_find_compatible, but matches on node name.
+     * Node names take the form "name" or "name@unitaddr"; we compare
+     * up to the '@' so callers can pass just "cpus" or "memory". */
+    uint32_t off = 0;
+    while (off < fdt->struct_size) {
+        uint32_t tok = fdt_read_be32(fdt->struct_blob, off);
+        switch (tok) {
+        case FDT_BEGIN_NODE: {
+            const char *n = fdt_node_name(fdt, off);
+            const char *p = name;
+            while (*p && *p == *n) { p++; n++; }
+            if (*p == 0 && (*n == 0 || *n == '@')) return off;
+            off = skip_name(fdt, off);
+            break;
+        }
+        case FDT_END_NODE:
+        case FDT_NOP:        off += 4; break;
+        case FDT_PROP:       off = skip_prop(fdt, off); break;
+        case FDT_END:
+        default:             return UINT32_MAX;
+        }
+    }
+    return UINT32_MAX;
+}
+
+bool fdt_node_prop_u32(const fdt_t *fdt, uint32_t node_off,
+                       const char *name, uint32_t *out) {
+    uint32_t len = 0;
+    const void *p = fdt_node_prop(fdt, node_off, name, &len);
+    if (!p || len < 4) return false;
+    if (out) *out = fdt_read_be32(p, 0);
+    return true;
+}
+
 bool fdt_node_reg64(const fdt_t *fdt, uint32_t node_off, uint32_t idx,
                     uint64_t *out_addr, uint64_t *out_size) {
     uint32_t len = 0;

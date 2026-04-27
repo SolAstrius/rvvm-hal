@@ -131,6 +131,16 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
     if (plic_off != UINT32_MAX) fdt_node_reg64(&fdt, plic_off, 0, &plic_at, NULL);
     irq_init((uintptr_t)plic_at);
 
+    /* 5b. Time subsystem — CLINT base for wfi-paced waits, and the
+     * mtime tick rate so frame deadlines work on non-default machines. */
+    uint32_t clint_off = fdt_find_compatible(&fdt, "sifive,clint0");
+    uint64_t clint_at  = 0;
+    if (clint_off != UINT32_MAX) fdt_node_reg64(&fdt, clint_off, 0, &clint_at, NULL);
+    uint32_t cpus_off = fdt_find_node_named(&fdt, "cpus");
+    uint32_t hz = 0;
+    if (cpus_off != UINT32_MAX) fdt_node_prop_u32(&fdt, cpus_off, "timebase-frequency", &hz);
+    time_init((uintptr_t)clint_at, hz);
+
     uint32_t uart_irq = fdt_node_irq(&fdt, u_off);
     if (uart_irq) {
         uart_printf("\nirq: PLIC @ %p; UART source line = %u\n",
@@ -150,7 +160,7 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
     hid_kb_init(&kb, RVVM_I2C_HID_KEYBOARD);
     uart_puts("\nNow polling HID keyboard (focus the GUI window). Ctrl-A x to quit RVVM.\n");
 
-    uint64_t deadline = time_now() + RVVM_TICKS_PER_FRAME;
+    uint64_t deadline = time_now() + time_ticks_per_frame();
     uint32_t last_irq_count = 0;
     for (;;) {
         hid_kb_poll(&kb, on_key, NULL);
@@ -165,6 +175,6 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
         }
 
         time_busy_until(deadline);
-        deadline += RVVM_TICKS_PER_FRAME;
+        deadline += time_ticks_per_frame();
     }
 }
