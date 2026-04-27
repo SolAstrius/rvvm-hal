@@ -23,6 +23,13 @@ build/%.o: src/%.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# string.c implements memcpy/memset/memmove. The compiler can recognise
+# these bodies and rewrite them into self-calls; -fno-builtin (plus the
+# per-function no_builtin attribute in the source) suppresses that.
+build/string.o: src/string.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) -fno-builtin -c -o $@ $<
+
 build/%.o: src/%.S
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c -o $@ $<
