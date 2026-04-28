@@ -22,6 +22,27 @@
 #define NVME_LBA_SIZE       512U
 #define NVME_PAGE_SIZE      4096U
 
+/* PRP list capacity (§4.1.2). One PRP list page holds 512 8-byte
+ * entries; in a multi-page list the last entry of each non-final
+ * page is a chain pointer to the next page (NVMe spec §4.1.2.2),
+ * so chained pages give 511 data entries each. With 16 pages:
+ *
+ *   max data entries = 15 chained × 511 + 1 final × 512 = 8177
+ *   max single transfer = (1 PRP1 + 8177 list entries) × 4 KiB ≈ 32 MiB
+ *
+ * Larger transfers are split internally by nvme_read / nvme_write.
+ * 16 pages costs 64 KiB per nvme_t — acceptable for our cores
+ * (typical use is 1-3 nvme_t instances per firmware). */
+#define NVME_PRP_LIST_PAGES   16
+
+/* Max single NVMe command transfer in BYTES, given NVME_PRP_LIST_PAGES.
+ *   = (1 PRP1 page) + (15 chained × 511 entries) + (1 final × 512)
+ *   = 1 + 15*511 + 512 = 8178 pages
+ *   = 8178 × 4 KiB = ~32 MiB
+ * nvme_read / nvme_write split larger callers internally. Exposed
+ * here in case a caller wants to pre-size buffers to avoid the split. */
+#define NVME_MAX_SINGLE_TRANSFER  (8178u * NVME_PAGE_SIZE)
+
 /* Static storage for the queues + PRP list. Page-aligned via the
  * struct's own aligned attribute (these fields are first). */
 typedef struct __attribute__((aligned(4096))) {
@@ -29,7 +50,7 @@ typedef struct __attribute__((aligned(4096))) {
     uint8_t acq_buf[NVME_PAGE_SIZE];
     uint8_t iosq_buf[NVME_PAGE_SIZE];
     uint8_t iocq_buf[NVME_PAGE_SIZE];
-    uint8_t prp_list[NVME_PAGE_SIZE];
+    uint8_t prp_list[NVME_PRP_LIST_PAGES * NVME_PAGE_SIZE];
 
     uintptr_t bar0;
     uint64_t  num_lbas;       /* namespace size in 512 B blocks */

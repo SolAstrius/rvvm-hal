@@ -128,15 +128,35 @@ static uint32_t cqe_r32(const uint8_t *cqe, uint32_t off) {
          | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-/* Fill in PRP1/PRP2 (and the PRP list page if needed) for a transfer
- * of `size` bytes starting at `buf`. NVMe rules (§4.4):
+/* Write a 64-bit little-endian value into the PRP list at byte
+ * offset `off`. Defined as bytewise so we don't assume CPU endian
+ * matches the wire format (which is always LE for NVMe). */
+static inline void prp_list_w64(nvme_t *n, uint32_t off, uint64_t v) {
+    for (int b = 0; b < 8; b++) {
+        n->prp_list[off + b] = (uint8_t)((v >> (b * 8)) & 0xFF);
+    }
+}
+
+/* Fill in PRP1/PRP2 (and a chained PRP list if needed) for a transfer
+ * of `size` bytes starting at `buf`. NVMe rules (§4.1.2):
  *   - PRP1 may be misaligned within a page; subsequent PRPs are page-aligned
  *   - For data covering ≤ 1 page after PRP1's offset, only PRP1 is used
  *   - For data covering ≤ 2 pages, PRP1 + PRP2 (PRP2 = page address)
- *   - Otherwise PRP2 is the phys address of a list of 8-byte page entries
+ *   - Otherwise PRP2 = phys address of a PRP list. A PRP list is one
+ *     page (512 × 8-byte entries). For lists larger than one page,
+ *     §4.1.2.2 requires the LAST entry of each non-final list page
+ *     to be a CHAIN POINTER to the next list page — NOT a data
+ *     entry. So chained pages hold 511 data entries each; only the
+ *     final page holds up to 512.
+ *
+ * Caller must guarantee `size` ≤ NVME_MAX_SINGLE_TRANSFER (32 MiB
+ * with NVME_PRP_LIST_PAGES=16). nvme_read/nvme_write split larger
+ * transfers across multiple commands.
  *
  * Since we emulate on RVVM with identity-mapped DMA, "phys address" of
  * a buffer is just its pointer cast to uint64. */
+#define ENTRIES_PER_LIST_PAGE   (NVME_PAGE_SIZE / 8)   /* 512 */
+
 static void setup_prp(nvme_t *n, uint8_t *sqe, const void *buf, uint32_t size) {
     uint64_t addr = (uint64_t)(uintptr_t)buf;
     uint32_t page_off = addr & (NVME_PAGE_SIZE - 1);
@@ -146,22 +166,47 @@ static void setup_prp(nvme_t *n, uint8_t *sqe, const void *buf, uint32_t size) {
 
     if (size <= first_chunk) {
         sqe_w64(sqe, SQE_PRP2, 0);
-    } else if (size <= first_chunk + NVME_PAGE_SIZE) {
+        return;
+    }
+    if (size <= first_chunk + NVME_PAGE_SIZE) {
         /* Exactly one extra page: PRP2 = address of that page. */
         sqe_w64(sqe, SQE_PRP2, (addr + first_chunk) & ~(uint64_t)(NVME_PAGE_SIZE - 1));
-    } else {
-        /* PRP list: write each subsequent page address into prp_list[]. */
-        uint64_t list_base = (addr + first_chunk) & ~(uint64_t)(NVME_PAGE_SIZE - 1);
-        uint32_t remaining = size - first_chunk;
-        uint32_t i = 0;
-        for (uint32_t p = 0; p < remaining; p += NVME_PAGE_SIZE, i++) {
-            uint64_t entry = list_base + (uint64_t)i * NVME_PAGE_SIZE;
-            for (int b = 0; b < 8; b++) {
-                n->prp_list[i*8 + b] = (entry >> (b * 8)) & 0xFF;
-            }
-        }
-        sqe_w64(sqe, SQE_PRP2, (uint64_t)(uintptr_t)n->prp_list);
+        return;
     }
+
+    /* PRP list path. */
+    uint64_t list_base = (addr + first_chunk) & ~(uint64_t)(NVME_PAGE_SIZE - 1);
+    uint32_t remaining = size - first_chunk;
+    uint32_t entries_needed = (remaining + NVME_PAGE_SIZE - 1) / NVME_PAGE_SIZE;
+
+    /* Walk entries; emit chain pointer at the last slot of each
+     * non-final list page. `cur_page` and `slot` track our write
+     * position in n->prp_list. `i` is the data-entry index — does
+     * NOT advance when we emit a chain pointer. */
+    uint32_t cur_page = 0;
+    uint32_t slot     = 0;
+    uint32_t i        = 0;
+    while (i < entries_needed) {
+        uint32_t off = cur_page * NVME_PAGE_SIZE + slot * 8;
+
+        bool last_slot       = (slot == ENTRIES_PER_LIST_PAGE - 1);
+        bool more_after_this = (i + 1 < entries_needed);
+        if (last_slot && more_after_this) {
+            /* Chain to next list page; do NOT consume `i`. */
+            uint64_t next = (uint64_t)(uintptr_t)
+                            &n->prp_list[(cur_page + 1) * NVME_PAGE_SIZE];
+            prp_list_w64(n, off, next);
+            cur_page++;
+            slot = 0;
+            continue;
+        }
+
+        prp_list_w64(n, off, list_base + (uint64_t)i * NVME_PAGE_SIZE);
+        slot++;
+        i++;
+    }
+
+    sqe_w64(sqe, SQE_PRP2, (uint64_t)(uintptr_t)n->prp_list);
 }
 
 /* Submit one prepared SQE on a queue and wait for its CQE. Returns the
@@ -327,16 +372,38 @@ bool nvme_init(nvme_t *n) {
     return nvme_init_nth(n, 0);
 }
 
+/* Max LBAs we can describe in a single NVMe command using our PRP
+ * list capacity. Beyond this, nvme_read / nvme_write loop. */
+#define NVME_MAX_LBAS_PER_CMD   (NVME_MAX_SINGLE_TRANSFER / NVME_LBA_SIZE)
+
 uint32_t nvme_read(nvme_t *n, uint64_t lba, void *buf, uint32_t nlb) {
     if (!n->present || nlb == 0) return 0;
-    uint32_t st = io_cmd(n, IO_READ, lba, buf, nlb * NVME_LBA_SIZE, nlb);
-    return st == 0 ? nlb : 0;
+    uint32_t done = 0;
+    while (done < nlb) {
+        uint32_t batch = nlb - done;
+        if (batch > NVME_MAX_LBAS_PER_CMD) batch = NVME_MAX_LBAS_PER_CMD;
+        uint32_t st = io_cmd(n, IO_READ, lba + done,
+                             (uint8_t *)buf + (uint64_t)done * NVME_LBA_SIZE,
+                             batch * NVME_LBA_SIZE, batch);
+        if (st != 0) return done;
+        done += batch;
+    }
+    return done;
 }
 
 uint32_t nvme_write(nvme_t *n, uint64_t lba, const void *buf, uint32_t nlb) {
     if (!n->present || nlb == 0) return 0;
-    uint32_t st = io_cmd(n, IO_WRITE, lba, buf, nlb * NVME_LBA_SIZE, nlb);
-    return st == 0 ? nlb : 0;
+    uint32_t done = 0;
+    while (done < nlb) {
+        uint32_t batch = nlb - done;
+        if (batch > NVME_MAX_LBAS_PER_CMD) batch = NVME_MAX_LBAS_PER_CMD;
+        uint32_t st = io_cmd(n, IO_WRITE, lba + done,
+                             (const uint8_t *)buf + (uint64_t)done * NVME_LBA_SIZE,
+                             batch * NVME_LBA_SIZE, batch);
+        if (st != 0) return done;
+        done += batch;
+    }
+    return done;
 }
 
 bool nvme_flush(nvme_t *n) {
