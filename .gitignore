@@ -5,3 +5,9 @@ libhal.a
 result
 result-*
 vendor/picolibc-build/
+
+# Per-example build artifacts. Examples emit firmware.{bin,elf}
+# next to their main.c via $(OBJCOPY); these are reproducible
+# from source so we don't track them.
+examples/*/firmware.bin
+examples/*/firmware.elf
