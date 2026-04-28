@@ -18,6 +18,8 @@
 #include "pci.h"
 #include "time.h"
 #include "smp.h"
+#include "atomic.h"
+#include "mutex.h"
 #include "rvvm.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -38,6 +40,27 @@ extern char __bss_start[], __bss_end[];
 static void greet(uint64_t hartid, void *arg) {
     uart_printf("  [hart %u] hello! arg=%p, mhartid via CSR = %u\n",
                 hartid, arg, (uint64_t)smp_this_hart());
+}
+
+/* Concurrency torture: each invocation increments two counters
+ * 50000 times. One uses atomic_add, one is guarded by a mutex.
+ * After 4 harts × 50000 iterations × both paths, we expect
+ * 200000 in each counter. Any race shows up as a smaller number. */
+#define ITERS_PER_HART  50000
+
+static volatile uint32_t atomic_counter = 0;
+static volatile uint32_t mutex_counter  = 0;
+static mutex_t           lock           = MUTEX_INIT;
+
+static void hammer(uint64_t hartid, void *arg) {
+    (void)hartid; (void)arg;
+    for (uint32_t i = 0; i < ITERS_PER_HART; i++) {
+        atomic_add_u32(&atomic_counter, 1);
+
+        mutex_lock(&lock);
+        mutex_counter++;       /* deliberately non-atomic — lock protects */
+        mutex_unlock(&lock);
+    }
 }
 
 void kmain(uint64_t hartid, uint64_t fdt_addr) {
@@ -97,6 +120,26 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
             smp_wait(h);
         }
         uart_puts("[primary] all secondaries returned.\n");
+
+        /* Round 3: atomics + mutex stress.  Every hart (including
+         * primary) hammers two counters; afterward we verify both
+         * landed on the expected total. */
+        uart_printf("\nround 3: atomic + mutex contention (%u iters/hart × %u harts)\n",
+                    (uint64_t)ITERS_PER_HART, (uint64_t)n);
+        for (uint32_t h = 1; h < n; h++) {
+            smp_start(h, hammer, NULL);
+        }
+        hammer(0, NULL);                    /* primary participates */
+        for (uint32_t h = 1; h < n; h++) {
+            smp_wait(h);
+        }
+        uint32_t want = ITERS_PER_HART * n;
+        uart_printf("[primary] atomic_counter = %u (want %u) → %s\n",
+                    (uint64_t)atomic_counter, (uint64_t)want,
+                    atomic_counter == want ? "OK" : "RACE");
+        uart_printf("[primary] mutex_counter  = %u (want %u) → %s\n",
+                    (uint64_t)mutex_counter, (uint64_t)want,
+                    mutex_counter == want ? "OK" : "RACE");
     }
 
     uart_puts("\ndone.\n");
