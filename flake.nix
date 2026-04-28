@@ -21,6 +21,10 @@
           packages = with pkgs; [
             zig                       # cc + linker + cross targets
             llvmPackages.bintools     # llvm-ar / llvm-objcopy / llvm-readelf
+            meson                     # vendor/picolibc build configure
+            ninja                     # vendor/picolibc build backend
+            pkg-config                # meson asks for it on configure
+            python3                   # picolibc generators
           ];
 
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath rvvmRuntimeDeps;

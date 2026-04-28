@@ -1,0 +1,45 @@
+# Meson cross-file driving picolibc's build through zig cc.
+#
+# zig cc handles the riscv64-freestanding-none target end-to-end —
+# preprocessor, compiler, assembler, linker — so we only need to
+# point meson at it. The supporting tools (ar, ranlib, nm, strip)
+# come from llvm-bintools, which our devshell already provides.
+#
+# Args we pin everywhere:
+#   -target riscv64-freestanding-none  match the rest of the HAL
+#   -mcmodel=medany                    rv64 large code model (rvvm.ld layout)
+#   -ffreestanding                     no hosted assumptions
+#   -fno-stack-protector               we don't have __stack_chk_guard
+#   -fno-pie                           we link statically at fixed addresses
+#   -nostdinc / -nostdlib              picolibc IS the libc; no prior one
+
+[binaries]
+c       = ['zig', 'cc', '-target', 'riscv64-freestanding-none']
+cpp     = ['zig', 'c++', '-target', 'riscv64-freestanding-none']
+ar      = 'llvm-ar'
+as      = ['zig', 'cc', '-target', 'riscv64-freestanding-none']
+nm      = 'llvm-nm'
+strip   = 'llvm-strip'
+ranlib  = 'llvm-ranlib'
+
+[host_machine]
+system     = 'none'
+cpu_family = 'riscv64'
+cpu        = 'riscv'
+endian     = 'little'
+
+[properties]
+# picolibc tries to compile-and-link a tiny test program to sanity-
+# check the toolchain; we tell it not to bother (no host runtime).
+skip_sanity_check = true
+
+# Optional layout hints picolibc uses to prefill its default linker
+# script. We don't use picolibc's crt0/ld so these are advisory only,
+# but match RVVM's defaults anyway.
+default_flash_addr = '0x80000000'
+default_flash_size = '0x10000000'
+default_ram_addr   = '0x90000000'
+default_ram_size   = '0x10000000'
+
+c_args      = ['-mcmodel=medany', '-ffreestanding', '-fno-stack-protector', '-fno-pie', '-Os']
+c_link_args = ['-mcmodel=medany', '-nostdlib']

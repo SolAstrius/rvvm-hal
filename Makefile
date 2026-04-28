@@ -28,9 +28,33 @@ ifeq ($(HAL_NO_SMP),1)
 CFLAGS   += -DHAL_NO_SMP
 endif
 
+# Optional: HAL_PICOLIBC=min|std links picolibc into firmwares that
+# include this build of libhal.a. Two variants live under
+# vendor/picolibc-build/{min,std}/install — built on demand by the
+# `picolibc-min` / `picolibc-std` targets below. See README's libc
+# section for the per-variant feature matrix.
+#
+# When HAL_PICOLIBC is on:
+#   - src/picolibc_hooks.c is compiled in (FILE put/get → uart, _sbrk)
+#   - src/string.c is excluded (picolibc has its own mem* + better
+#     str* family; ours would shadow it).
+#   - Consumer firmwares must add the picolibc headers + libs to
+#     their own CFLAGS/LDFLAGS — see examples/picolibc-hello/Makefile.
+ifneq ($(HAL_PICOLIBC),)
+CFLAGS   += -DHAL_PICOLIBC \
+            -isystem vendor/picolibc-build/$(HAL_PICOLIBC)/install/include
+endif
+
 SRCS     := $(wildcard src/*.c) $(wildcard src/*.S)
 ifeq ($(HAL_NO_SMP),1)
 SRCS     := $(filter-out src/smp.c,$(SRCS))
+endif
+ifeq ($(HAL_PICOLIBC),)
+# Without picolibc, picolibc_hooks.c is a no-op (#ifdef gates everything)
+# but excluding it from the archive avoids a dead .o entirely.
+SRCS     := $(filter-out src/picolibc_hooks.c,$(SRCS))
+else
+SRCS     := $(filter-out src/string.c,$(SRCS))
 endif
 OBJS     := $(patsubst src/%.c,build/%.o,$(filter %.c,$(SRCS))) \
             $(patsubst src/%.S,build/%.o,$(filter %.S,$(SRCS)))
@@ -59,6 +83,61 @@ libhal.a: $(OBJS)
 
 clean:
 	rm -rf build libhal.a
+
+# ---------------------------------------------------------------------
+# Vendored picolibc — built once, cached under vendor/picolibc-build/.
+#
+#   picolibc-min   integer printf only, no semihost, no posix-io,
+#                  no locale tables. ~30 KiB total before gc-sections;
+#                  pulls a few hundred bytes into a chip-8/apple-1
+#                  style firmware.
+#   picolibc-std   adds float/double printf and the math library.
+#                  For game-boy-advance (libm sqrt/sin/cos paths)
+#                  and bwbasic (full stdio + qsort + math).
+#
+# Both produce <variant>/install/{lib/libc.a, include/} ready to feed
+# into a consumer's -isystem / -L flags. Re-run `make picolibc-clean`
+# to start fresh; otherwise the targets are idempotent.
+
+PICOLIBC_DIR := vendor/picolibc
+
+# Common meson flags — disable everything we definitely don't need
+# regardless of variant. Float/printf format is the variant axis.
+PICOLIBC_COMMON := \
+    --cross-file=../../picolibc-cross.txt \
+    --buildtype=minsize \
+    -Dposix-console=false \
+    -Dsemihost=false \
+    -Dpicocrt=false \
+    -Dtests=false \
+    -Dmultilib=false \
+    -Dincludedir=include \
+    -Dlibdir=lib
+
+picolibc-min: vendor/picolibc-build/min/install/lib/libc.a
+picolibc-std: vendor/picolibc-build/std/install/lib/libc.a
+
+vendor/picolibc-build/min/install/lib/libc.a:
+	@mkdir -p vendor/picolibc-build/min
+	cd vendor/picolibc-build/min && meson setup $(PICOLIBC_COMMON) \
+	    --prefix=$$(pwd)/install \
+	    -Dformat-default=integer \
+	    ../../picolibc
+	cd vendor/picolibc-build/min && meson compile && meson install
+	@printf '\nBuilt picolibc-min: %s\n' "$$(stat -c %s $@) bytes (libc.a)"
+
+vendor/picolibc-build/std/install/lib/libc.a:
+	@mkdir -p vendor/picolibc-build/std
+	cd vendor/picolibc-build/std && meson setup $(PICOLIBC_COMMON) \
+	    --prefix=$$(pwd)/install \
+	    -Dformat-default=double \
+	    -Dio-long-long=true \
+	    ../../picolibc
+	cd vendor/picolibc-build/std && meson compile && meson install
+	@printf '\nBuilt picolibc-std: %s\n' "$$(stat -c %s $@) bytes (libc.a)"
+
+picolibc-clean:
+	rm -rf vendor/picolibc-build
 
 # ---------------------------------------------------------------------
 # Convenience: build & run examples from the HAL root.
@@ -90,4 +169,5 @@ run-probe:
 run-smp:
 	$(MAKE) -C examples/smp run
 
-.PHONY: all clean run-audio-beep run-audio-edge run-audio-pcm run-probe run-smp
+.PHONY: all clean run-audio-beep run-audio-edge run-audio-pcm run-probe run-smp \
+        picolibc-min picolibc-std picolibc-clean

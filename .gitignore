@@ -4,3 +4,4 @@ libhal.a
 *.o
 result
 result-*
+vendor/picolibc-build/

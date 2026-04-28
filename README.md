@@ -151,6 +151,55 @@ consumer's CFLAGS — otherwise prototypes in `smp.h` and symbols in
 `libhal.a` disagree and you get either link errors or surprise
 function calls into a no-SMP-stripped lib.
 
+## C standard library (picolibc)
+
+The HAL vendors [picolibc](https://github.com/picolibc/picolibc)
+1.8.11 as a git submodule under `vendor/picolibc/` (BSD-licensed,
+designed for freestanding embedded RISC-V — descended from Newlib +
+AVR libc with the GPL pieces removed). Two prebuilt variants live
+under `vendor/picolibc-build/` after the first build:
+
+| variant | features | `libc.a` size | typical pull |
+|---|---|---|---|
+| `min` | integer-only printf, no float, no semihost, no posix-io | ~8 MB on disk | <1 KB into a chip-8/apple-1 firmware |
+| `std` | float/double printf + `<math.h>` + 64-bit `%lld` | ~10 MB on disk | ~30 KB into a basic/gba firmware |
+
+`-Wl,--gc-sections` (set in example LDFLAGS) trims unreferenced
+objects per-firmware — pulling `printf` doesn't drag in `qsort`,
+calling `strlen` doesn't drag in `printf`, etc.
+
+Build the variant you need (one-time):
+
+```sh
+make picolibc-min          # for apple-1, game-boy, game-boy-advance
+make picolibc-std          # for basic, anything with printf("%f")
+```
+
+Then enable in your firmware's HAL build + your own CFLAGS/LDFLAGS:
+
+```make
+HAL_PICOLIBC := min
+PICOLIBC     := $(HAL)/vendor/picolibc-build/$(HAL_PICOLIBC)/install
+
+CFLAGS  += -DHAL_PICOLIBC -isystem $(PICOLIBC)/include
+LDFLAGS += -Wl,--gc-sections
+LDLIBS  += $(PICOLIBC)/lib/libc.a
+
+$(HAL)/libhal.a:
+	$(MAKE) -C $(HAL) HAL_PICOLIBC=$(HAL_PICOLIBC)
+```
+
+Inside your code: `<stdio.h>`, `<stdlib.h>`, `<string.h>`,
+`<ctype.h>`, `<math.h>`, etc. all work as expected. `stdout` /
+`stderr` are wired to the UART via `src/picolibc_hooks.c`; `malloc`
+hits a 16 MiB heap region carved out of `link.ld` between BSS and
+the SMP stacks. See [`examples/picolibc-hello/`](examples/picolibc-hello/)
+for a working firmware that exercises `printf`, `malloc`, `strtol`,
+and `qsort` in 10 KiB.
+
+Without `HAL_PICOLIBC`, none of this is compiled or linked —
+firmwares stay at the bare-metal-only baseline.
+
 ## Real-world consumer
 
 [**SolAstrius/scev-chip-8**](https://github.com/SolAstrius/scev-chip-8)

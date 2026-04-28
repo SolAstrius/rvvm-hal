@@ -44,6 +44,23 @@ SECTIONS {
         __bss_end = .;
     } > RAM
 
+    /* Heap region between BSS and the stacks. Picolibc's sbrk
+     * (vendor/picolibc/libc/misc/picosbrk.c) reads __heap_start and
+     * __heap_end as extern symbols; consumers that don't link
+     * picolibc never reference these so the address space costs
+     * nothing in their firmware (it doesn't get into the binary).
+     *
+     * Size: 16 MiB. Comfortable headroom for any picolibc-using
+     * consumer, well under RVVM's 256 MiB default RAM. Consumers
+     * that need more can override at link time:
+     *     -Wl,--defsym=__heap_size=0x4000000
+     * — but we don't expose that knob via the script today; just
+     * adjust the literal below if a consumer outgrows it.  */
+    . = ALIGN(16);
+    __heap_start = .;
+    . += 16M;
+    __heap_end = .;
+
     /* One 16 KiB stack per possibly-present hart. Per-hart sp is
      * computed in start.S as `__stack_top - mhartid * 16384`. Total
      * = SMP_MAX_HARTS (8) × 16 KiB = 128 KiB; a single-hart firmware
