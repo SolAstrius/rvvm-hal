@@ -11,7 +11,14 @@ AR       := llvm-ar
 CFLAGS   := -Os -ffreestanding -fno-stack-protector -fno-pie \
             -mcmodel=medany -nostdlib \
             -Wall -Wextra -Wno-unused-parameter \
+            -ffunction-sections -fdata-sections \
             -Iinclude
+
+# -ffunction-sections + -fdata-sections puts every function and
+# global into its own ELF section. Combined with `-Wl,--gc-sections`
+# at consumer firmware link time, this lets unreferenced HAL symbols
+# (FatFs internal helpers, unused IRQ counters, audio paths the
+# consumer never touches) drop out of the final binary entirely.
 
 # Optional: HAL_NO_SMP=1 strips multi-hart support. start.S parks every
 # non-zero hart with no per-hart stack math, smp.c isn't compiled, and
@@ -45,6 +52,18 @@ CFLAGS   += -DHAL_PICOLIBC \
             -isystem vendor/picolibc-build/$(HAL_PICOLIBC)/install/include
 endif
 
+# Optional: HAL_FATFS=1 includes vendored FatFs (vendor/fatfs/) for
+# FAT/exFAT-on-NVMe support. Adds ~22 KiB to libhal.a — every byte
+# strippable via -Wl,--gc-sections at firmware link time if a
+# consumer doesn't actually call f_open / f_mkfs / f_chdir / etc.
+# Requires HAL_PICOLIBC (FatFs needs malloc + string functions).
+ifeq ($(HAL_FATFS),1)
+ifeq ($(HAL_PICOLIBC),)
+$(error HAL_FATFS=1 requires HAL_PICOLIBC=min or std)
+endif
+CFLAGS   += -DHAL_FATFS -Ivendor/fatfs
+endif
+
 SRCS     := $(wildcard src/*.c) $(wildcard src/*.S)
 ifeq ($(HAL_NO_SMP),1)
 SRCS     := $(filter-out src/smp.c,$(SRCS))
@@ -56,8 +75,22 @@ SRCS     := $(filter-out src/picolibc_hooks.c,$(SRCS))
 else
 SRCS     := $(filter-out src/string.c,$(SRCS))
 endif
+ifneq ($(HAL_FATFS),1)
+# Without HAL_FATFS, fatfs_disk.c is a no-op (#ifdef gates everything).
+SRCS     := $(filter-out src/fatfs_disk.c,$(SRCS))
+endif
+
 OBJS     := $(patsubst src/%.c,build/%.o,$(filter %.c,$(SRCS))) \
             $(patsubst src/%.S,build/%.o,$(filter %.S,$(SRCS)))
+
+# When HAL_FATFS is on, also compile vendor/fatfs/ff.c and
+# vendor/fatfs/ffunicode.c into libhal.a. Per-function-sections still
+# applies, so a consumer that only uses f_open + f_read + f_close
+# pays ~10 KiB; a consumer that never calls FatFs at all gc-sections
+# the lot.
+ifeq ($(HAL_FATFS),1)
+OBJS     += build/fatfs/ff.o build/fatfs/ffunicode.o
+endif
 
 all: libhal.a
 
@@ -75,6 +108,13 @@ build/string.o: src/string.c
 build/%.o: src/%.S
 	@mkdir -p build
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# Vendored FatFs sources, compiled with the same CFLAGS plus a few
+# warning suppressions for upstream code we don't want to patch.
+build/fatfs/%.o: vendor/fatfs/%.c
+	@mkdir -p build/fatfs
+	$(CC) $(CFLAGS) -Wno-unused-but-set-variable -Wno-format \
+	    -c -o $@ $<
 
 libhal.a: $(OBJS)
 	$(AR) rcs $@ $^
