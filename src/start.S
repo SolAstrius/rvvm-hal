@@ -27,6 +27,20 @@ _start:
     /* Set up stack — top of the reserved region in link.ld. */
     la      sp, __stack_top
 
+    /* Enable the FP context. mstatus.FS is in bits 14:13; reset
+     * value is 00 (Off), which makes every F/D instruction trap
+     * with "Illegal Instruction". Set FS = 01 (Initial) so the
+     * F/D extensions can be used by C code that the compiler
+     * decides to emit FP instructions in (printf with %f, math
+     * libraries, etc.).
+     *
+     * This is independent of mstatus.MIE — interrupts stay off
+     * until irq_global_enable(). RVVM advertises the F+D
+     * extensions in misa, so the FP instructions decode correctly
+     * once FS != Off. */
+    li      t0, 0x2000        /* mstatus.FS = 01 (Initial) */
+    csrs    mstatus, t0
+
     /* Zero BSS. */
     la      t0, __bss_start
     la      t1, __bss_end
