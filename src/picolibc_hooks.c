@@ -33,13 +33,16 @@ static int uart_putc_io(char c, FILE *f) {
     return (unsigned char)c;
 }
 
-/* Picolibc's macro-driven FILE constructor. Read/write directions
- * are set per-stream; we want write-only on stdout/stderr and a
- * stub get for stdin (returns EOF — nobody should be reading). */
+/* Read direction. Blocks until a byte arrives — picolibc's fgets,
+ * scanf, getchar, and friends expect blocking semantics. Returns the
+ * byte plus a \r→\n normalisation (most terminals deliver CR for the
+ * Enter key, but the C-string convention is \n line endings). For
+ * non-blocking reads call rvvm-hal's uart_getc_nb directly. */
 static int uart_getc_io(FILE *f) {
     (void)f;
-    int c = uart_getc_nb();
-    return c < 0 ? EOF : c;
+    char c = uart_getc();
+    int r = (c == '\r') ? '\n' : (unsigned char)c;
+    return r;
 }
 
 static FILE __stdio_uart =
