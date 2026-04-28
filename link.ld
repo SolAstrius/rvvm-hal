@@ -44,9 +44,15 @@ SECTIONS {
         __bss_end = .;
     } > RAM
 
+    /* One 16 KiB stack per possibly-present hart. Per-hart sp is
+     * computed in start.S as `__stack_top - mhartid * 16384`. Total
+     * = SMP_MAX_HARTS (8) × 16 KiB = 128 KiB; a single-hart firmware
+     * just leaves the high stacks unused. Bump SMP_STACK_PER_HART /
+     * SMP_MAX_HARTS in include/smp.h together with the size below
+     * if changed.  */
     . = ALIGN(16);
     __stack_bottom = .;
-    . += 64K;
+    . += 8 * 16K;
     __stack_top = .;
 
     /DISCARD/ : { *(.comment) *(.note.*) *(.eh_frame*) *(.riscv.attributes) }

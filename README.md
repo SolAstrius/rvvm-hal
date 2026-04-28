@@ -16,6 +16,7 @@ Drivers included:
 | `i2c`   | OpenCores I²C master — write / write-then-read, polling | `src/devices/i2c-oc.c` |
 | `hid`   | HID-over-I²C boot keyboard, key-diff event emit | `src/devices/i2c-hid.c` + `hid-keyboard.c` |
 | `ata`   | PCI ATA PIO read, single-sector loop | `src/devices/ata.c` |
+| `smp`   | multi-hart detection (FDT `/cpus`), CLINT MSIP wakeup, opt-in `smp_start(hartid, fn, arg)` | `src/devices/riscv-aclint.c` |
 | `mmio`/`time`/`string` | utility helpers (volatile MMIO, mtime CSR, memset/cpy/move/cmp) | — |
 
 Plus `rvvm.h` — the topology header. Documents every magic address,
@@ -102,6 +103,53 @@ cd examples/probe
 nix develop ../.. --command make
 rvvm firmware.bin -bochs_display
 ```
+
+## Multi-hart
+
+By default `_start` parks every hart with `mhartid != 0` in a tight
+`wfi` loop on `mie.MSIE`, with a fresh per-hart 16 KiB stack. Single-
+hart firmwares ignore SMP entirely — secondaries stay parked, primary
+runs as before.
+
+Consumers that want parallelism include `smp.h` and call:
+
+```c
+smp_init(&fdt);                          // count /cpus children
+uart_printf("%u harts\n", smp_hart_count());
+
+smp_start(1, run_emulator_step, &state); // wake hart 1 with work
+do_other_work_on_primary();
+smp_wait(1);                             // join
+```
+
+The wake mechanism is the SiFive CLINT's `msip[hartid]` register —
+primary writes 1 to wake the secondary's `wfi`. Capped at 8 harts
+(stack reservation in `link.ld`); harts beyond that park silently
+without a stack. See [`examples/smp/`](examples/smp/) for a working
+demo and [`include/smp.h`](include/smp.h) for the full API.
+
+### Opting out of SMP
+
+Pass `HAL_NO_SMP=1` when building both the HAL and your firmware to
+strip multi-hart support entirely. `start.S` shrinks back to the
+single-hart shape (any non-zero hart parks forever, no per-hart
+stack math), `smp.c` isn't compiled, and `smp.h` becomes a header of
+inline stubs (`smp_hart_count() == 1`, `smp_start() == false`) so
+the same source compiles either way. Useful for FPGA softcore
+deployments where the 128 KiB stack reservation matters, or when
+you want the smallest possible boot path.
+
+```sh
+make HAL_NO_SMP=1
+# in your firmware Makefile:
+CFLAGS  += -DHAL_NO_SMP
+$(MAKE) -C $(HAL) HAL_NO_SMP=1
+```
+
+The flag must be set on **both** sides — the lib build and your
+consumer's CFLAGS — otherwise prototypes in `smp.h` and symbols in
+`libhal.a` disagree and you get either link errors or surprise
+function calls into a no-SMP-stripped lib.
 
 ## Real-world consumer
 

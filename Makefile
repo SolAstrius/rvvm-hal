@@ -13,7 +13,25 @@ CFLAGS   := -Os -ffreestanding -fno-stack-protector -fno-pie \
             -Wall -Wextra -Wno-unused-parameter \
             -Iinclude
 
+# Optional: HAL_NO_SMP=1 strips multi-hart support. start.S parks every
+# non-zero hart with no per-hart stack math, smp.c isn't compiled, and
+# smp.h becomes a stub returning hart_count=1 / smp_start=false. Useful
+# for: (a) firmwares targetting tiny FPGA softcores where the 128 KiB
+# stack reservation matters, (b) consumers that want the smallest
+# possible boot path. Cost otherwise is ~3 KiB of code + 64 KiB of
+# unused stack address space — both negligible on RVVM (256 MiB RAM
+# default), but the option exists for the cases where it isn't.
+#
+# Consumer firmwares set this in their own Makefile:
+#   $(MAKE) -C $(HAL) HAL_NO_SMP=1
+ifeq ($(HAL_NO_SMP),1)
+CFLAGS   += -DHAL_NO_SMP
+endif
+
 SRCS     := $(wildcard src/*.c) $(wildcard src/*.S)
+ifeq ($(HAL_NO_SMP),1)
+SRCS     := $(filter-out src/smp.c,$(SRCS))
+endif
 OBJS     := $(patsubst src/%.c,build/%.o,$(filter %.c,$(SRCS))) \
             $(patsubst src/%.S,build/%.o,$(filter %.S,$(SRCS)))
 
@@ -69,4 +87,7 @@ run-audio-pcm:
 run-probe:
 	$(MAKE) -C examples/probe run
 
-.PHONY: all clean run-audio-beep run-audio-edge run-audio-pcm run-probe
+run-smp:
+	$(MAKE) -C examples/smp run
+
+.PHONY: all clean run-audio-beep run-audio-edge run-audio-pcm run-probe run-smp
