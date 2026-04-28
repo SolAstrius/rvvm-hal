@@ -177,6 +177,19 @@
 #define HDA_FMT_16BIT_MONO_96K    0x0810U   /* base=48, mult=2, div=1 */
 #define HDA_FMT_16BIT_MONO_88K2   0x4810U   /* base=44.1, mult=2, div=1 */
 
+/* Stereo variants — channels-1 = 1 in bits 3:0. RVVM's HDA stream
+ * worker honours the format register's channel count regardless of
+ * what the codec widget caps advertise (see sound-hda.c around the
+ * `channels = (fmt & 0xF) + 1` parse), so a stereo stream works even
+ * though the C-Media-9880 codec NID 2 currently lacks the STEREO bit
+ * — RVVM averages L+R into mono before handing to ALSA. When RVVM
+ * eventually exposes a stereo widget, this same fmt will deliver
+ * true stereo to the host with no firmware changes. */
+#define HDA_FMT_16BIT_STEREO_48K  0x0011U
+#define HDA_FMT_16BIT_STEREO_44K1 0x4011U
+#define HDA_FMT_16BIT_STEREO_96K  0x0811U
+#define HDA_FMT_16BIT_STEREO_88K2 0x4811U
+
 /* AMP_GAIN_MUTE payload bits. */
 #define HDA_AMP_OUTPUT            0x8000U
 #define HDA_AMP_LEFT              0x2000U

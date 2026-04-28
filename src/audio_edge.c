@@ -57,7 +57,8 @@ bool audio_edge_open(audio_edge_t *e, uint64_t emulator_hz) {
     for (uint32_t i = 0; i < EDGE_RING_FRAMES; i++) edge_ring[i] = 0;
 
     if (!audio_pcm_open(&edge_pcm, edge_ring, EDGE_RING_FRAMES,
-                        EDGE_BDL_ENTRIES, audio_sample_rate())) {
+                        EDGE_BDL_ENTRIES, audio_sample_rate(),
+                        /* channels */ 1)) {
         return false;
     }
     /* Start with the ring marked fully pre-filled so writable() waits

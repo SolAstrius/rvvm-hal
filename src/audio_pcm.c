@@ -1,10 +1,18 @@
-/* Raw 16-bit signed mono PCM streaming on HDA NID 2 (the converter
- * widget). Drives RVVM's HDA stream worker via a Buffer Descriptor
- * List that loops over a caller-provided ring.
+/* Raw 16-bit signed PCM streaming (mono or stereo) on HDA NID 2 (the
+ * converter widget). Drives RVVM's HDA stream worker via a Buffer
+ * Descriptor List that loops over a caller-provided ring.
  *
  * Was the second half of hda.c; split out so consumers that don't
  * stream PCM (e.g. the CHIP-8 firmware, which only beeps) don't pull
- * this code into their link. */
+ * this code into their link.
+ *
+ * Channel handling: RVVM's HDA stream worker reads channel count from
+ * the SDnFMT register (sound-hda.c parses `(fmt & 0xF) + 1`), not from
+ * the codec widget caps. So a stereo fmt drives the worker's stereo
+ * path even though the C-Media codec NID 2 advertises mono only —
+ * RVVM averages L+R into mono before the ALSA backend. When RVVM
+ * exposes a stereo converter widget the same code path delivers true
+ * stereo. */
 
 #include "audio_pcm.h"
 #include "audio_internal.h"
@@ -35,19 +43,26 @@ static inline uint32_t SD_R32(uint32_t off) { return mmio_r32(sd_reg(off)); }
 static inline void SD_W32(uint32_t off, uint32_t v) { mmio_w32(sd_reg(off), v); }
 static inline void SD_W16(uint32_t off, uint16_t v) { mmio_w16(sd_reg(off), v); }
 
-/* Translate sample_rate Hz → SDnFMT bit encoding for 16-bit mono. */
-static uint16_t fmt_for_rate(uint32_t rate) {
+/* Translate (sample_rate, channels) → SDnFMT bit encoding for 16-bit
+ * PCM. Channels-1 lives in bits 3:0 of the format word; the rest of
+ * the encoding (rate, bits) is identical between mono and stereo, so
+ * we fetch the mono base and OR in (channels - 1). */
+static uint16_t fmt_for_format(uint32_t rate, uint32_t channels) {
+    if (channels < 1 || channels > 16) return 0;
+    uint16_t base;
     switch (rate) {
-        case 44100: return HDA_FMT_16BIT_MONO_44K1;
-        case 48000: return HDA_FMT_16BIT_MONO_48K;
-        case 88200: return HDA_FMT_16BIT_MONO_88K2;
-        case 96000: return HDA_FMT_16BIT_MONO_96K;
+        case 44100: base = HDA_FMT_16BIT_MONO_44K1; break;
+        case 48000: base = HDA_FMT_16BIT_MONO_48K;  break;
+        case 88200: base = HDA_FMT_16BIT_MONO_88K2; break;
+        case 96000: base = HDA_FMT_16BIT_MONO_96K;  break;
         default:    return 0;
     }
+    return (uint16_t)(base | (channels - 1));
 }
 
 bool audio_pcm_open(audio_pcm_t *p, int16_t *ring, uint32_t ring_frames,
-                    uint32_t bdl_entries, uint32_t sample_rate) {
+                    uint32_t bdl_entries, uint32_t sample_rate,
+                    uint32_t channels) {
     if (!hda_up) {
         uart_puts("audio_pcm: backend not up; call audio_init() first\n");
         return false;
@@ -58,15 +73,22 @@ bool audio_pcm_open(audio_pcm_t *p, int16_t *ring, uint32_t ring_frames,
                     (uint64_t)ring_frames, (uint64_t)bdl_entries);
         return false;
     }
-    uint16_t fmt = fmt_for_rate(sample_rate);
+    if (channels == 0 || channels > 16) {
+        uart_printf("audio_pcm: bad channel count %u (need 1..16)\n",
+                    (uint64_t)channels);
+        return false;
+    }
+    uint16_t fmt = fmt_for_format(sample_rate, channels);
     if (fmt == 0) {
-        uart_printf("audio_pcm: unsupported sample rate %u\n", (uint64_t)sample_rate);
+        uart_printf("audio_pcm: unsupported format rate=%u ch=%u\n",
+                    (uint64_t)sample_rate, (uint64_t)channels);
         return false;
     }
 
     p->ring          = ring;
     p->ring_frames   = ring_frames;
     p->sample_rate   = sample_rate;
+    p->channels      = channels;
     p->bdl_entries   = bdl_entries;
     p->wp_frames     = 0;
     p->total_written = 0;
@@ -90,7 +112,12 @@ bool audio_pcm_open(audio_pcm_t *p, int16_t *ring, uint32_t ring_frames,
                                (uint8_t)HDA_VERB_SET_CONV_FMT, fmt));
 
     /* Bind the codec converter to our stream tag. payload format:
-     * (stream_tag << 4) | channel. Channel 0 = mono. */
+     * (stream_tag << 4) | channel — `channel` here is the starting
+     * channel index of THIS widget within the stream's interleaved
+     * channels (HDA spec §7.3.3.11). Always 0 for our single-widget
+     * setup whether mono or stereo: the widget consumes channels
+     * starting at index 0, and the stream's total channel count
+     * comes from the format register, not this verb. */
     uint8_t stream_chan_payload = (uint8_t)((p->stream_tag & 0xF) << 4);
     hda_send_cmd(hda_pack_short(0, HDA_OUT_NID,
                                 HDA_VERB_SET_CONV_STREAM, stream_chan_payload));
@@ -99,9 +126,10 @@ bool audio_pcm_open(audio_pcm_t *p, int16_t *ring, uint32_t ring_frames,
      * IOC=1 keeps host-side bookkeeping consistent (LPIB updates at
      * boundaries) even though we don't wire an IRQ. */
     uint32_t frames_per_entry = ring_frames / bdl_entries;
-    uint32_t bytes_per_entry  = frames_per_entry * 2;   /* 16-bit mono */
+    uint32_t bytes_per_frame  = channels * 2;            /* 16-bit */
+    uint32_t bytes_per_entry  = frames_per_entry * bytes_per_frame;
     for (uint32_t i = 0; i < bdl_entries; i++) {
-        bdl[i].addr  = (uint64_t)(uintptr_t)&ring[i * frames_per_entry];
+        bdl[i].addr  = (uint64_t)(uintptr_t)&ring[i * frames_per_entry * channels];
         bdl[i].len   = bytes_per_entry;
         bdl[i].flags = 1;
     }
@@ -109,7 +137,7 @@ bool audio_pcm_open(audio_pcm_t *p, int16_t *ring, uint32_t ring_frames,
     uint64_t bdl_addr = (uint64_t)(uintptr_t)bdl;
     SD_W32(HDA_SD_BDPL, (uint32_t)(bdl_addr & 0xFFFFFFFFu));
     SD_W32(HDA_SD_BDPU, (uint32_t)(bdl_addr >> 32));
-    SD_W32(HDA_SD_CBL,  ring_frames * 2);                /* bytes */
+    SD_W32(HDA_SD_CBL,  ring_frames * bytes_per_frame);
     SD_W16(HDA_SD_LVI,  (uint16_t)(bdl_entries - 1));
     SD_W16(HDA_SD_FMT,  fmt);
 
@@ -118,16 +146,19 @@ bool audio_pcm_open(audio_pcm_t *p, int16_t *ring, uint32_t ring_frames,
     SD_W32(HDA_SD_CTL, ctl);
 
     p->running = true;
-    uart_printf("audio_pcm: ring %u frames @ %u Hz, %u BDL entries (%u frames each)\n",
+    uart_printf("audio_pcm: ring %u frames @ %u Hz × %u ch, "
+                "%u BDL entries (%u frames each)\n",
                 (uint64_t)ring_frames, (uint64_t)sample_rate,
+                (uint64_t)channels,
                 (uint64_t)bdl_entries, (uint64_t)frames_per_entry);
     return true;
 }
 
 uint32_t audio_pcm_position(const audio_pcm_t *p) {
     if (!p->running) return 0;
-    uint32_t lpib_bytes = SD_R32(HDA_SD_LPIB);
-    return (lpib_bytes / 2) % p->ring_frames;
+    uint32_t lpib_bytes      = SD_R32(HDA_SD_LPIB);
+    uint32_t bytes_per_frame = p->channels * 2;
+    return (lpib_bytes / bytes_per_frame) % p->ring_frames;
 }
 
 uint32_t audio_pcm_writable(const audio_pcm_t *p) {

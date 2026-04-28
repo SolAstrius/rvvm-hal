@@ -146,7 +146,8 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
     }
 
     audio_pcm_t pcm;
-    if (!audio_pcm_open(&pcm, ring, RING_FRAMES, BDL_ENTRIES, SAMPLE_RATE)) {
+    if (!audio_pcm_open(&pcm, ring, RING_FRAMES, BDL_ENTRIES, SAMPLE_RATE,
+                        /* channels */ 1)) {
         uart_puts("audio_pcm_open failed\n");
         for (;;) __asm__ volatile ("wfi");
     }
