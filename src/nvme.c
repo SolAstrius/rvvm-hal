@@ -222,8 +222,12 @@ static uint32_t submit_and_wait(nvme_t *n, uint32_t qid,
     mmio_barrier();   /* SQE writes complete before doorbell */
     w32(n, db_sq_tail(qid), *sq_tail);
 
-    /* Poll the CQE phase bit at slot *cq_head. */
-    for (int spin = 0; spin < 1000000; spin++) {
+    /* Poll the CQE phase bit at slot *cq_head. The 1M cap was
+     * tight for large I/O reads (a 32 MiB read with PRP chaining
+     * makes RVVM's NVMe model walk thousands of PRP entries DMA-
+     * ing each page). Bump to 16M — still bounded for stuck-host
+     * cases, and ~16× slack for big transfers. */
+    for (int spin = 0; spin < 16 * 1000 * 1000; spin++) {
         const uint8_t *cqe = cq_buf + (*cq_head) * 16;
         uint32_t cid_pb_sf = cqe_r32(cqe, CQE_CID_PB_SF);
         bool phase = (cid_pb_sf & CQE_PB_MASK) != 0;
@@ -385,7 +389,13 @@ uint32_t nvme_read(nvme_t *n, uint64_t lba, void *buf, uint32_t nlb) {
         uint32_t st = io_cmd(n, IO_READ, lba + done,
                              (uint8_t *)buf + (uint64_t)done * NVME_LBA_SIZE,
                              batch * NVME_LBA_SIZE, batch);
-        if (st != 0) return done;
+        if (st != 0) {
+            uart_printf("nvme: read failed at lba=%u nlb=%u status=%x "
+                        "(%u of %u LBAs done)\n",
+                        (uint64_t)(lba + done), (uint64_t)batch,
+                        (uint64_t)st, (uint64_t)done, (uint64_t)nlb);
+            return done;
+        }
         done += batch;
     }
     return done;
