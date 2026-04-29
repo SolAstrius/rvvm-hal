@@ -23,7 +23,11 @@
 #include "rvvm.h"
 #include "mmio.h"
 #include "uart.h"
-#include <string.h>
+
+/* Forward-decl mem* — HAL's src/string.c provides them. Avoiding
+ * <string.h> means this driver builds without HAL_PICOLIBC. */
+extern void *memcpy(void *, const void *, unsigned long);
+extern void *memset(void *, int, unsigned long);
 
 /* ====================================================================
  * §1. Register and descriptor definitions
