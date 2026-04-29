@@ -1,37 +1,72 @@
 # rvvm-hal
 
-A small bare-metal Hardware Abstraction Layer for [RVVM](https://github.com/LekKit/RVVM)
+A bare-metal Hardware Abstraction Layer for [RVVM](https://github.com/LekKit/RVVM)
 — the lightweight RISC-V emulator. Target audience: people writing
 M-mode firmware that runs directly on RVVM with no SBI / no kernel,
-and wants a working device stack in ~1500 lines of C.
+who want to ship anything from a 7 KB hello-world to a full unikernel
+(libc + filesystem + TCP/IP + SMP) without rolling each piece by hand.
 
-Drivers included:
+The base HAL is ~2K lines of C exposing every device RVVM emulates.
+Optional layers add picolibc, FatFs, and lwIP; each is opt-in via a
+build flag and contributes zero bytes to firmwares that don't use it
+(`-Wl,--gc-sections` trims aggressively).
 
-| device | provides | RVVM source it talks to |
+## Drivers — always available
+
+| device | provides | RVVM source |
 |---|---|---|
-| `uart`  | NS16550A — `printf`, `getc`, hex dump | `src/devices/ns16550a.c` |
-| `fdt`   | Flattened Device Tree walker — `compatible` lookup, `reg` decode | (consumed via `a1` at boot) |
-| `pci`   | ECAM scanner, BAR readback (no sizing — RVVM pre-assigns) | `src/devices/pci-bus.c` |
-| `bochs` | Bochs Display PCI 1234:1111 — mode-set, linear XRGB8888 framebuffer | `src/devices/bochs-display.c` |
-| `i2c`   | OpenCores I²C master — write / write-then-read, polling | `src/devices/i2c-oc.c` |
-| `hid`   | HID-over-I²C boot keyboard, key-diff event emit | `src/devices/i2c-hid.c` + `hid-keyboard.c` |
-| `ata`   | PCI ATA PIO read, single-sector loop | `src/devices/ata.c` |
-| `smp`   | multi-hart detection (FDT `/cpus`), CLINT MSIP wakeup, opt-in `smp_start(hartid, fn, arg)` | `src/devices/riscv-aclint.c` |
-| `mmio`/`time`/`string` | utility helpers (volatile MMIO, mtime CSR, memset/cpy/move/cmp) | — |
+| `uart`   | NS16550A — `printf`, `getc`, hex dump | `src/devices/ns16550a.c` |
+| `fdt`    | Flattened Device Tree walker — `compatible` lookup, `reg` decode | (consumed via `a1` at boot) |
+| `pci`    | ECAM scanner, BAR readback, capability list, MSI configure | `src/devices/pci-bus.c` |
+| `irq`    | SiFive PLIC + RISC-V trap dispatch | `src/devices/riscv-plic.c` |
+| `smp`    | multi-hart detection (FDT `/cpus`), CLINT MSIP wakeup, `smp_start(hartid, fn, arg)` | `src/devices/riscv-aclint.c` |
+| `time`   | `rdtime` CSR + CLINT mtimecmp idle-wait via `wfi` | `src/devices/riscv-aclint.c` |
+| `rtc`    | Google Goldfish RTC — `rtc_now_seconds()`, wallclock | `src/devices/rtc-goldfish.c` |
+| `atomic` | RV-A wrappers (`amoadd`/`lr`/`sc` typed inlines), `mutex_t` spinlock | — |
+| `bochs`/`gfx`/`gfx_text` | Bochs Display + simple-framebuffer auto-select, char-grid renderer | `src/devices/bochs-display.c` |
+| `i2c`    | OpenCores I²C master — write / write-then-read, polling | `src/devices/i2c-oc.c` |
+| `hid`    | HID-over-I²C boot keyboard, key-diff event emit | `src/devices/i2c-hid.c` |
+| `nvme`   | NVMe-over-PCIe block device, chained PRP, large transfers | `src/devices/nvme.c` |
+| `audio`/`hda` | Intel HDA controller — beep widget + raw 16-bit PCM streaming, ALSA-period-aligned BDL | `src/devices/sound-hda.c` |
+| `eth`    | Realtek RTL8169 — descriptor-mode RX/TX, raw L2 frames | `src/devices/rtl8169.c` |
+| `mmio`/`string` | volatile MMIO accessors, word-aligned mem*` helpers | — |
 
 Plus `rvvm.h` — the topology header. Documents every magic address,
 PCI device ID, and register offset RVVM uses, with cross-refs back
-into the RVVM source. Intended as fallback constants once FDT
-discovery has populated the real values.
+into RVVM's source.
+
+## Optional layers — opt-in via `HAL_X=1`
+
+| flag | adds | size in firmware |
+|---|---|---|
+| `HAL_PICOLIBC=min` | picolibc 1.8.11 — `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<ctype.h>`, integer printf | ~3-10 KiB depending on use |
+| `HAL_PICOLIBC=std` | + float/double printf, `<math.h>`, 64-bit `%lld` | +20-40 KiB depending on use |
+| `HAL_FATFS=1` | FatFs r0.15a — FAT12/16/32/exFAT RW on top of NVMe | ~11 KiB for typical f_open/read/write |
+| `HAL_LWIP=1` | lwIP 2.2.1 — DHCP, ARP, ICMP, IP, TCP, UDP, DNS | ~50-150 KiB depending on use |
+| `HAL_NO_SMP=1` | strips multi-hart support (single-hart firmwares) | savings: ~3 KiB code + 64 KiB stack |
+
+Each flag must be set on **both** the HAL build and your firmware's
+own CFLAGS so prototypes match symbols. Without flags, the HAL stays
+at its bare-metal baseline (~30 KiB compiled, ~7 KiB after gc).
 
 ## Build
 
-Requires `zig` (>= 0.13, used as `zig cc -target riscv64-freestanding-none`)
-and `llvm-ar`. The flake provides both:
+Requires `zig` (used as `zig cc -target riscv64-freestanding-none`)
+and `llvm-ar`. The flake provides both, plus `meson` + `ninja` for
+picolibc:
 
 ```sh
-nix develop --command make
-# → libhal.a (~30 KB static archive)
+nix develop --command make                   # baseline libhal.a
+nix develop --command make HAL_PICOLIBC=min  # + libc
+nix develop --command make HAL_PICOLIBC=min HAL_FATFS=1            # + FS
+nix develop --command make HAL_PICOLIBC=min HAL_FATFS=1 HAL_LWIP=1 # full unikernel
+```
+
+First-time picolibc/lwIP builds also fetch the submodules:
+
+```sh
+git submodule update --init --recursive
+make picolibc-min picolibc-std    # one-time, ~30s each
 ```
 
 ## Use from your own firmware
@@ -40,15 +75,16 @@ Add as a git submodule:
 
 ```sh
 git submodule add https://github.com/SolAstrius/rvvm-hal vendor/rvvm-hal
+git -C vendor/rvvm-hal submodule update --init --recursive
 ```
 
-Your `Makefile`:
+Minimal `Makefile`:
 
 ```make
 HAL := vendor/rvvm-hal
 
 CFLAGS  += -I$(HAL)/include
-LDFLAGS += -T$(HAL)/link.ld
+LDFLAGS += -Wl,-T,$(HAL)/link.ld -Wl,--gc-sections
 
 $(HAL)/libhal.a:
 	$(MAKE) -C $(HAL)
@@ -58,175 +94,91 @@ firmware.elf: $(YOUR_OBJS) $(HAL)/libhal.a
 	    $(LDFLAGS) -o $@ $(YOUR_OBJS) $(HAL)/libhal.a
 ```
 
-Your `main.c`:
+Minimal `main.c`:
 
 ```c
 #include "uart.h"
-#include "fdt.h"
-#include "bochs.h"
 
 void kmain(uint64_t hartid, uint64_t fdt_addr) {
-    uart_init(0);                      // 0 = use rvvm.h fallback
+    uart_init(0);
     uart_puts("hello from RVVM bare metal!\n");
-    // ... see examples/probe/main.c for a full HAL walkthrough
+    for (;;) __asm__ volatile ("wfi");
 }
 ```
 
-You also need a `_start` — `src/start.S` is provided. It parks
-secondary harts, zeroes BSS, sets `sp` from `__stack_top` (defined
-in `link.ld`), and forwards `a0=hartid` + `a1=fdt_addr` into
-`kmain`.
+`src/start.S` provides `_start` — parks secondary harts in `wfi`
+on `mie.MSIE`, sets per-hart sp from `__stack_top`, zeroes BSS,
+forwards `a0=hartid` + `a1=fdt_addr` into `kmain`. Per-hart 16 KiB
+stacks reserved by `link.ld` (8 × 16 KiB = 128 KiB total).
 
 ## Run on RVVM
 
 ```sh
-# Headless (UART only)
+# Bare metal: UART only
 rvvm firmware.bin -nogui -nonet -nosound
 
-# With graphical framebuffer + HID keyboard
-rvvm firmware.bin -bochs_display -nonet -nosound
-
-# Mount a disk image as ATA
-rvvm firmware.bin -bochs_display -ata mydisk.bin
-```
-
-## Example
-
-[`examples/probe/`](examples/probe/) — boots, walks the FDT, lists
-every device found, brings up bochs (when available) with a colour
-test pattern, dumps ATA disk info if mounted, echoes HID keystrokes
-to the UART. Demonstrates the full HAL surface in a single ~150
-line `main.c`.
-
-```sh
-cd examples/probe
-nix develop ../.. --command make
+# With graphics + keyboard
 rvvm firmware.bin -bochs_display
+
+# With NVMe-backed disk image
+rvvm firmware.bin -nvme mydisk.img
+
+# Multi-core
+rvvm firmware.bin -smp 4
+
+# Networking (default; -nonet to disable)
+rvvm firmware.bin -portfwd udp/2007=7   # forward host:2007 → guest:7
 ```
 
-## Multi-hart
+## Examples
 
-By default `_start` parks every hart with `mhartid != 0` in a tight
-`wfi` loop on `mie.MSIE`, with a fresh per-hart 16 KiB stack. Single-
-hart firmwares ignore SMP entirely — secondaries stay parked, primary
-runs as before.
+| example | demonstrates |
+|---|---|
+| [`examples/probe/`](examples/probe/) | bare HAL surface — FDT walk, gfx auto-select, NVMe LBA0 dump, IRQ-driven UART RX |
+| [`examples/audio-beep/`](examples/audio-beep/) | HDA codec beep widget — C-major scale via `audio_beep(hz)` |
+| [`examples/audio-edge/`](examples/audio-edge/) | emulator-cycle-driven 1-bit speaker — Speccy/Apple II shape |
+| [`examples/audio-pcm/`](examples/audio-pcm/) | raw 16-bit PCM streaming with continuous-feed pattern |
+| [`examples/smp/`](examples/smp/) | multi-hart wake-up + atomic/mutex contention test (200K iters × 4 harts) |
+| [`examples/picolibc-hello/`](examples/picolibc-hello/) | real `printf` / `malloc` / `strtol` / `qsort` |
+| [`examples/fs-hello/`](examples/fs-hello/) | exFAT image: `f_open` / `f_read` / `f_write` / `f_size`, file persists across boots |
+| [`examples/eth-hello/`](examples/eth-hello/) | RTL8169 raw L2: ARP request → reply, decode |
+| [`examples/net-hello/`](examples/net-hello/) | full TCP/IP — DHCP client gets an IP, UDP echo server on port 7 |
 
-Consumers that want parallelism include `smp.h` and call:
+## Real-world consumers
 
-```c
-smp_init(&fdt);                          // count /cpus children
-uart_printf("%u harts\n", smp_hart_count());
+| consumer | uses |
+|---|---|
+| [**scev-chip-8**](https://github.com/SolAstrius/scev-chip-8) | bare HAL — UART, gfx, HID, NVMe |
+| [**scev-cores/apple-1**](https://github.com/SolAstrius/scev-cores) | + picolibc-min |
+| [**scev-cores/zx-spectrum**](https://github.com/SolAstrius/scev-cores) | bare HAL + custom snapshot loader |
+| [**scev-cores/game-boy**](https://github.com/SolAstrius/scev-cores) | + picolibc-min, vendored binjgb |
+| [**scev-cores/game-boy-advance**](https://github.com/SolAstrius/scev-cores) | + picolibc-min, vendored gdkGBA |
+| [**scev-cores/basic**](https://github.com/SolAstrius/scev-cores) | bare HAL + custom shim, vendored bwbasic 3.20 |
 
-smp_start(1, run_emulator_step, &state); // wake hart 1 with work
-do_other_work_on_primary();
-smp_wait(1);                             // join
-```
-
-The wake mechanism is the SiFive CLINT's `msip[hartid]` register —
-primary writes 1 to wake the secondary's `wfi`. Capped at 8 harts
-(stack reservation in `link.ld`); harts beyond that park silently
-without a stack. See [`examples/smp/`](examples/smp/) for a working
-demo and [`include/smp.h`](include/smp.h) for the full API.
-
-### Opting out of SMP
-
-Pass `HAL_NO_SMP=1` when building both the HAL and your firmware to
-strip multi-hart support entirely. `start.S` shrinks back to the
-single-hart shape (any non-zero hart parks forever, no per-hart
-stack math), `smp.c` isn't compiled, and `smp.h` becomes a header of
-inline stubs (`smp_hart_count() == 1`, `smp_start() == false`) so
-the same source compiles either way. Useful for FPGA softcore
-deployments where the 128 KiB stack reservation matters, or when
-you want the smallest possible boot path.
-
-```sh
-make HAL_NO_SMP=1
-# in your firmware Makefile:
-CFLAGS  += -DHAL_NO_SMP
-$(MAKE) -C $(HAL) HAL_NO_SMP=1
-```
-
-The flag must be set on **both** sides — the lib build and your
-consumer's CFLAGS — otherwise prototypes in `smp.h` and symbols in
-`libhal.a` disagree and you get either link errors or surprise
-function calls into a no-SMP-stripped lib.
-
-## C standard library (picolibc)
-
-The HAL vendors [picolibc](https://github.com/picolibc/picolibc)
-1.8.11 as a git submodule under `vendor/picolibc/` (BSD-licensed,
-designed for freestanding embedded RISC-V — descended from Newlib +
-AVR libc with the GPL pieces removed). Two prebuilt variants live
-under `vendor/picolibc-build/` after the first build:
-
-| variant | features | `libc.a` size | typical pull |
-|---|---|---|---|
-| `min` | integer-only printf, no float, no semihost, no posix-io | ~8 MB on disk | <1 KB into a chip-8/apple-1 firmware |
-| `std` | float/double printf + `<math.h>` + 64-bit `%lld` | ~10 MB on disk | ~30 KB into a basic/gba firmware |
-
-`-Wl,--gc-sections` (set in example LDFLAGS) trims unreferenced
-objects per-firmware — pulling `printf` doesn't drag in `qsort`,
-calling `strlen` doesn't drag in `printf`, etc.
-
-Build the variant you need (one-time):
-
-```sh
-make picolibc-min          # for apple-1, game-boy, game-boy-advance
-make picolibc-std          # for basic, anything with printf("%f")
-```
-
-Then enable in your firmware's HAL build + your own CFLAGS/LDFLAGS:
-
-```make
-HAL_PICOLIBC := min
-PICOLIBC     := $(HAL)/vendor/picolibc-build/$(HAL_PICOLIBC)/install
-
-CFLAGS  += -DHAL_PICOLIBC -isystem $(PICOLIBC)/include
-LDFLAGS += -Wl,--gc-sections
-LDLIBS  += $(PICOLIBC)/lib/libc.a
-
-$(HAL)/libhal.a:
-	$(MAKE) -C $(HAL) HAL_PICOLIBC=$(HAL_PICOLIBC)
-```
-
-Inside your code: `<stdio.h>`, `<stdlib.h>`, `<string.h>`,
-`<ctype.h>`, `<math.h>`, etc. all work as expected. `stdout` /
-`stderr` are wired to the UART via `src/picolibc_hooks.c`; `malloc`
-hits a 16 MiB heap region carved out of `link.ld` between BSS and
-the SMP stacks. See [`examples/picolibc-hello/`](examples/picolibc-hello/)
-for a working firmware that exercises `printf`, `malloc`, `strtol`,
-and `qsort` in 10 KiB.
-
-Without `HAL_PICOLIBC`, none of this is compiled or linked —
-firmwares stay at the bare-metal-only baseline.
-
-## Real-world consumer
-
-[**SolAstrius/scev-chip-8**](https://github.com/SolAstrius/scev-chip-8)
-— a complete CHIP-8 interpreter as bare-metal RISC-V firmware,
-built on top of this HAL. ~480 lines of CHIP-8-specific code
-(interpreter, ROM, orchestration); everything else (UART, FDT, PCI,
-Bochs Display, I²C, HID, ATA) comes from rvvm-hal. Boots with the
-embedded IBM Logo splash, or loads any `.ch8` ROM mounted via
-`-ata`. Keyboard input via the GUI window is wired through HID.
-
-It pins this repo via submodule, so it's a working reference for
-the consumption pattern in the previous section.
+Each pins this repo via submodule. Working references for every
+opt-in flag combination.
 
 ## Versioning
 
-Git-tagged. Pin a specific version in your submodule for stability:
+Git-tagged following semver. Pin a specific version in your submodule
+for stability:
 
 ```sh
-git -C vendor/rvvm-hal checkout v0.1.0
-git add vendor/rvvm-hal && git commit -m "pin rvvm-hal v0.1.0"
+git -C vendor/rvvm-hal checkout v1.0.0
+git add vendor/rvvm-hal && git commit -m "pin rvvm-hal v1.0.0"
 ```
+
+API contract (post-1.0): driver functions don't break across minor
+versions. New optional layers and additions go to minor bumps;
+breaking changes go to major bumps.
 
 ## License
 
-MIT-ish. Treat as public-domain reference code.
+MIT-ish for the HAL itself. Treat as public-domain reference code.
 
-The RVVM-side device emulators it talks to live in `LekKit/RVVM`
-under MPL-2.0 — the address constants and register layouts in
-`include/rvvm.h` were derived from reading that source. RVVM itself
-isn't redistributed here.
+Vendored libraries live under `vendor/` with their own licenses
+(all permissive — picolibc is BSD-1c, FatFs is BSD-1c, lwIP is
+BSD-3c). The RVVM-side device emulators it talks to are in
+`LekKit/RVVM` under MPL-2.0 — the address constants and register
+layouts in `include/rvvm.h` were derived from reading that source.
+RVVM itself isn't redistributed here.
