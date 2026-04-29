@@ -214,7 +214,10 @@ static void render_gfx(ui_t *u, const ui_menu_t *menu) {
     for (uint32_t i = 0; i < menu->count && row < u->text->rows - 2; i++) {
         const ui_item_t *it = &menu->items[i];
         bool sel = (i == menu->selected);
-        char marker[3] = { ' ', sel ? '>' : ' ', ' ' };
+        /* NUL-terminated: gfx_text_puts walks until \0 or col limit;
+         * an unterminated array would spill stack content into the
+         * chars buffer and you'd see ghost text from prior frames. */
+        char marker[4] = { ' ', sel ? '>' : ' ', ' ', '\0' };
         gfx_text_puts(u->text, 0,           row, marker, 0);
         gfx_text_puts(u->text, 3,           row, it->label ? it->label : "", 0);
         if (it->hint) {
