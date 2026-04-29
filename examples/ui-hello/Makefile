@@ -41,13 +41,17 @@ firmware.bin: firmware.elf
 # Run with the fs-hello exFAT image attached so 'Pick a file'
 # has something to show. If it doesn't exist, the menu disables
 # the file-picker option.
+NVME_FLAG := $(if $(wildcard ../fs-hello/exfat.img),-nvme ../fs-hello/exfat.img,)
+
+# Headless: UART backend only. Drive with arrow keys in the host terminal.
 run: firmware.bin
-	@if [ ! -f ../fs-hello/exfat.img ]; then \
-	    echo '(no ../fs-hello/exfat.img — Pick-a-file will be disabled)'; \
-	    $(RVVM) firmware.bin -nogui -nonet -nosound; \
-	else \
-	    $(RVVM) firmware.bin -nogui -nonet -nosound -nvme ../fs-hello/exfat.img; \
-	fi
+	$(RVVM) firmware.bin -nogui -nonet -nosound $(NVME_FLAG)
+
+# GUI mode: Bochs framebuffer pops up alongside the UART. The same
+# menu renders to both, and you can drive it from EITHER the GUI
+# window's keyboard OR the host terminal. Try typing in both.
+run-gui: firmware.bin
+	$(RVVM) firmware.bin -bochs_display -nonet -nosound $(NVME_FLAG)
 
 clean:
 	rm -rf build firmware.elf firmware.bin
