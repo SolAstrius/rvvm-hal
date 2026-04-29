@@ -19,6 +19,7 @@
 #include "fdt.h"
 #include "pci.h"
 #include "time.h"
+#include "rtc.h"
 #include "rvvm.h"
 #include "nvme.h"
 #include "fs.h"
@@ -47,7 +48,15 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
             fdt_node_reg64(&fdt, off, 0, &at, NULL);
             pci_init((uintptr_t)at);
         }
+
+        off = fdt_find_compatible(&fdt, "google,goldfish-rtc");
+        if (off != UINT32_MAX) {
+            fdt_node_reg64(&fdt, off, 0, &at, NULL);
+            rtc_init((uintptr_t)at);
+        }
     }
+    printf("wallclock: %llu seconds since epoch (RTC says)\n",
+           (unsigned long long)rtc_now_seconds());
 
     if (!nvme_init(&disk)) {
         printf("no NVMe controller found — start RVVM with -nvme exfat.img\n");

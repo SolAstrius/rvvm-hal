@@ -115,12 +115,12 @@
  * we vendored FatFs over hand-rolling ext2. */
 #define FF_FS_EXFAT		1
 
-/* Real-time clock for file timestamps. 1 = use stub date below
- * (firmware boot date). 0 would call get_fattime() which our glue
- * provides via rdtime — but our rdtime is only seconds-since-boot,
- * not wallclock, so the stub is more honest. Once we wire goldfish-
- * rtc, switch to 0. */
-#define FF_FS_NORTC		1
+/* Real-time clock for file timestamps. 0 = call get_fattime() (our
+ * glue routes that to goldfish-rtc → real wallclock). 1 = use the
+ * NORTC defaults below — kept as a fallback for firmwares that
+ * don't initialise the RTC (rtc_init() is idempotent and cheap, so
+ * there's rarely a reason). */
+#define FF_FS_NORTC		0
 #define FF_NORTC_MON	1
 #define FF_NORTC_MDAY	1
 #define FF_NORTC_YEAR	2024

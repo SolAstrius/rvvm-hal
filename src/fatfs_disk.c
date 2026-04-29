@@ -209,11 +209,51 @@ void ff_mutex_give  (int vol)   { (void)vol; }
  * wallclock here.
  * ==================================================================== */
 
+/* FatFs's date-time format (FAT timestamp):
+ *   bits 31:25  year - 1980  (0..127)
+ *   bits 24:21  month        (1..12)
+ *   bits 20:16  mday         (1..31)
+ *   bits 15:11  hour         (0..23)
+ *   bits 10:5   minute       (0..59)
+ *   bits  4:0   sec / 2      (0..29 covers 0..58 even sec)
+ *
+ * With FF_FS_NORTC=1 in ffconf.h, FatFs uses its hardcoded defaults
+ * and never calls this function — but the symbol still has to
+ * resolve, and a future flip to FF_FS_NORTC=0 should land somewhere
+ * useful, so we wire it to the goldfish RTC. */
+#include "rtc.h"
+
 DWORD get_fattime(void) {
-    /* (year - 1980) << 25 | month << 21 | mday << 16 |
-     *  hour << 11 | min << 5 | (sec / 2)
-     * Picked: 2024-01-01 00:00:00 — matches FF_NORTC_* defaults. */
-    return ((DWORD)(2024 - 1980) << 25) | ((DWORD)1 << 21) | ((DWORD)1 << 16);
+    uint64_t secs = rtc_now_seconds();
+    /* Days-from-epoch → Y/M/D using the standard civil-from-days
+     * algorithm (Howard Hinnant, public domain).  Faster than a
+     * mktime/gmtime call and dependency-free. */
+    int64_t days = (int64_t)(secs / 86400);
+    int sec_of_day = (int)(secs % 86400);
+    int hour = sec_of_day / 3600;
+    int min  = (sec_of_day / 60) % 60;
+    int sec  = sec_of_day % 60;
+
+    days += 719468;                  /* shift epoch to 0000-03-01 */
+    int era = (int)((days >= 0 ? days : days - 146096) / 146097);
+    unsigned doe = (unsigned)(days - (int64_t)era * 146097);
+    unsigned yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;
+    int year = (int)yoe + era * 400;
+    unsigned doy = doe - (365*yoe + yoe/4 - yoe/100);
+    unsigned mp  = (5*doy + 2) / 153;
+    unsigned mday  = doy - (153*mp + 2)/5 + 1;
+    unsigned month = mp < 10 ? mp + 3 : mp - 9;
+    if (month <= 2) year++;
+
+    if (year < 1980) { year = 1980; month = 1; mday = 1; hour = min = sec = 0; }
+    if (year > 2107) { year = 2107; }
+
+    return ((DWORD)(year - 1980) << 25)
+         | ((DWORD)month        << 21)
+         | ((DWORD)mday         << 16)
+         | ((DWORD)hour         << 11)
+         | ((DWORD)min          <<  5)
+         | ((DWORD)(sec / 2));
 }
 
 #endif /* HAL_FATFS */
