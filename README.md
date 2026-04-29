@@ -29,6 +29,7 @@ build flag and contributes zero bytes to firmwares that don't use it
 | `nvme`   | NVMe-over-PCIe block device, chained PRP, large transfers | `src/devices/nvme.c` |
 | `audio`/`hda` | Intel HDA controller — beep widget + raw 16-bit PCM streaming, ALSA-period-aligned BDL | `src/devices/sound-hda.c` |
 | `eth`    | Realtek RTL8169 — descriptor-mode RX/TX, raw L2 frames | `src/devices/rtl8169.c` |
+| `ui`     | menu / confirm / message / file-picker primitives, dual UART + GFX backend | — |
 | `mmio`/`string` | volatile MMIO accessors, word-aligned mem*` helpers | — |
 
 Plus `rvvm.h` — the topology header. Documents every magic address,
@@ -143,6 +144,7 @@ rvvm firmware.bin -portfwd udp/2007=7   # forward host:2007 → guest:7
 | [`examples/fs-hello/`](examples/fs-hello/) | exFAT image: `f_open` / `f_read` / `f_write` / `f_size`, file persists across boots |
 | [`examples/eth-hello/`](examples/eth-hello/) | RTL8169 raw L2: ARP request → reply, decode |
 | [`examples/net-hello/`](examples/net-hello/) | full TCP/IP — DHCP client gets an IP, UDP echo server on port 7 |
+| [`examples/ui-hello/`](examples/ui-hello/) | menu primitives — top-level menu, file picker, yes/no dialog, message banner |
 
 ## Real-world consumers
 
