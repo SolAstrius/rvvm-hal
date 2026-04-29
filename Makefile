@@ -64,6 +64,20 @@ endif
 CFLAGS   += -DHAL_FATFS -Ivendor/fatfs
 endif
 
+# Optional: HAL_LWIP=1 includes vendored lwIP 2.2.1 for TCP/IP. Adds
+# ~150 KiB to libhal.a, but per-firmware cost is whatever the
+# consumer actually references (DHCP-only ≈ 25 KiB; full TCP/UDP
+# server ≈ 60 KiB). Requires HAL_PICOLIBC (printf for diagnostics,
+# rand for TCP ISN).
+ifeq ($(HAL_LWIP),1)
+ifeq ($(HAL_PICOLIBC),)
+$(error HAL_LWIP=1 requires HAL_PICOLIBC=min or std)
+endif
+CFLAGS   += -DHAL_LWIP \
+            -Ivendor/lwip-config \
+            -Ivendor/lwip/src/include
+endif
+
 SRCS     := $(wildcard src/*.c) $(wildcard src/*.S)
 ifeq ($(HAL_NO_SMP),1)
 SRCS     := $(filter-out src/smp.c,$(SRCS))
@@ -79,6 +93,10 @@ ifneq ($(HAL_FATFS),1)
 # Without HAL_FATFS, fatfs_disk.c is a no-op (#ifdef gates everything).
 SRCS     := $(filter-out src/fatfs_disk.c,$(SRCS))
 endif
+ifneq ($(HAL_LWIP),1)
+# Without HAL_LWIP, net.c is a no-op (#ifdef gates everything).
+SRCS     := $(filter-out src/net.c,$(SRCS))
+endif
 
 OBJS     := $(patsubst src/%.c,build/%.o,$(filter %.c,$(SRCS))) \
             $(patsubst src/%.S,build/%.o,$(filter %.S,$(SRCS)))
@@ -90,6 +108,42 @@ OBJS     := $(patsubst src/%.c,build/%.o,$(filter %.c,$(SRCS))) \
 # the lot.
 ifeq ($(HAL_FATFS),1)
 OBJS     += build/fatfs/ff.o build/fatfs/ffunicode.o
+endif
+
+# When HAL_LWIP is on, compile lwIP's core, ipv4, and netif/ethernet.
+# Skipped: api/ (sequential socket layer needs threads), ipv6/, the
+# specialty netif drivers (ppp, slipif, lowpan6, bridge), apps/.
+ifeq ($(HAL_LWIP),1)
+LWIP_SRCS := \
+    vendor/lwip/src/core/init.c \
+    vendor/lwip/src/core/def.c \
+    vendor/lwip/src/core/dns.c \
+    vendor/lwip/src/core/inet_chksum.c \
+    vendor/lwip/src/core/ip.c \
+    vendor/lwip/src/core/mem.c \
+    vendor/lwip/src/core/memp.c \
+    vendor/lwip/src/core/netif.c \
+    vendor/lwip/src/core/pbuf.c \
+    vendor/lwip/src/core/raw.c \
+    vendor/lwip/src/core/stats.c \
+    vendor/lwip/src/core/sys.c \
+    vendor/lwip/src/core/tcp.c \
+    vendor/lwip/src/core/tcp_in.c \
+    vendor/lwip/src/core/tcp_out.c \
+    vendor/lwip/src/core/timeouts.c \
+    vendor/lwip/src/core/udp.c \
+    vendor/lwip/src/core/altcp.c \
+    vendor/lwip/src/core/altcp_alloc.c \
+    vendor/lwip/src/core/altcp_tcp.c \
+    vendor/lwip/src/core/ipv4/dhcp.c \
+    vendor/lwip/src/core/ipv4/etharp.c \
+    vendor/lwip/src/core/ipv4/icmp.c \
+    vendor/lwip/src/core/ipv4/ip4.c \
+    vendor/lwip/src/core/ipv4/ip4_addr.c \
+    vendor/lwip/src/core/ipv4/ip4_frag.c \
+    vendor/lwip/src/core/ipv4/acd.c \
+    vendor/lwip/src/netif/ethernet.c
+OBJS     += $(patsubst vendor/lwip/src/%.c,build/lwip/%.o,$(LWIP_SRCS))
 endif
 
 all: libhal.a
@@ -114,6 +168,15 @@ build/%.o: src/%.S
 build/fatfs/%.o: vendor/fatfs/%.c
 	@mkdir -p build/fatfs
 	$(CC) $(CFLAGS) -Wno-unused-but-set-variable -Wno-format \
+	    -c -o $@ $<
+
+# Vendored lwIP sources. The core/ tree compiles cleanly under our
+# CFLAGS; ipv4/ and netif/ live in subdirs so we mkdir build/lwip/...
+# accordingly.
+build/lwip/%.o: vendor/lwip/src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Wno-unused-parameter -Wno-address-of-packed-member \
+	    -Wno-unused-but-set-variable \
 	    -c -o $@ $<
 
 libhal.a: $(OBJS)

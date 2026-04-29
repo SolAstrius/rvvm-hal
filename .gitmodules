@@ -1,3 +1,6 @@
 [submodule "vendor/picolibc"]
 	path = vendor/picolibc
 	url = https://github.com/picolibc/picolibc
+[submodule "vendor/lwip"]
+	path = vendor/lwip
+	url = https://github.com/lwip-tcpip/lwip
