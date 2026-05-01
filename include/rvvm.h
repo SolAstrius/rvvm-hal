@@ -48,6 +48,23 @@
 #define RVVM_I2C_OC_BASE       0x10030000UL
 #define RVVM_I2C_OC_SIZE       0x00001000UL
 
+/* Generic syscon — `compatible = "syscon-poweroff,syscon-reboot"`.
+ * src/devices/syscon.h:15 SYSCON_DEFAULT_MMIO,
+ * src/devices/syscon.c:16-17 for the magic values.
+ *
+ * Single 16-bit write at offset 0:
+ *   0x5555  poweroff (rvvm_reset_machine(.., reset=false) — eventloop ends)
+ *   0x7777  reset    (rvvm_reset_machine(.., reset=true)  — machine restarts)
+ *
+ * No status byte is conveyed back to the host: the channel is one-bit
+ * (clean exit vs. timeout). hal_exit() uses this for CI's "did the
+ * firmware finish on its own" gate. Any richer status convention will
+ * need a custom RVVM device — kept on the TODO list. */
+#define RVVM_SYSCON_BASE       0x00100000UL
+#define RVVM_SYSCON_SIZE       0x00001000UL
+#define RVVM_SYSCON_POWEROFF   0x5555U
+#define RVVM_SYSCON_RESET      0x7777U
+
 /* RISC-V CLINT — `compatible = "sifive,clint0"`.
  * src/devices/riscv-aclint.h:15 CLINT_ADDR_DEFAULT.
  *

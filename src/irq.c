@@ -2,6 +2,7 @@
 #include "rvvm.h"
 #include "mmio.h"
 #include "uart.h"
+#include "panic.h"
 #include <stddef.h>
 
 /* M-mode external interrupt cause code (mcause low bits, with bit 63
@@ -150,31 +151,10 @@ uint32_t irq_count_for(uint32_t source) {
  *  (with x0 at index 1 unused, and x2 holding the *pre-decrement* sp).
  * ==================================================================== */
 
-/* Frame indices match register numbers. */
-#define R_SP   2
-
-static void panic_exception(uint64_t mcause, uint64_t mepc, uint64_t *regs) {
-    static const char *exc_names[16] = {
-        "instruction misaligned", "instruction access fault",
-        "illegal instruction",    "breakpoint",
-        "load misaligned",        "load access fault",
-        "store misaligned",       "store access fault",
-        "ecall U",                "ecall S",
-        "reserved (10)",          "ecall M",
-        "instruction page fault", "load page fault",
-        "reserved (14)",          "store page fault",
-    };
-    const char *name = (mcause < 16) ? exc_names[mcause] : "unknown";
-    uart_printf("\n!! TRAP: %s (mcause=%x)\n", name, mcause);
-    uart_printf("   mepc=%p  ra=%p  sp=%p\n",
-                (void *)(uintptr_t)mepc,
-                (void *)(uintptr_t)regs[1],
-                (void *)(uintptr_t)regs[R_SP]);
-    uart_printf("   a0=%x  a1=%x  a2=%x  a3=%x\n",
-                regs[10], regs[11], regs[12], regs[13]);
-    uart_puts("Halted.\n");
-    for (;;) __asm__ volatile ("wfi");
-}
+/* Synchronous-exception handler. Delegates to the shared dumper in
+ * src/panic.c, which produces a structured !!HAL-PANIC-V1 frame
+ * that tools/decode-panic can resolve against the firmware ELF.
+ * Never returns. */
 
 static void handle_external(void) {
     /* Drain — multiple sources can be claim-ready at once. PLIC's
@@ -223,5 +203,5 @@ void trap_dispatch(uint64_t mcause, uint64_t mepc, uint64_t *regs) {
         }
     }
     /* Synchronous exception — panic. */
-    panic_exception(mcause, mepc, regs);
+    hal_panic_from_trap(mcause, mepc, regs);
 }

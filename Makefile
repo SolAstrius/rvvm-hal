@@ -8,11 +8,35 @@ TARGET   := riscv64-freestanding-none
 CC       := zig cc -target $(TARGET)
 AR       := llvm-ar
 
-CFLAGS   := -Os -ffreestanding -fno-stack-protector -fno-pie \
+CFLAGS   := -ffreestanding -fno-stack-protector -fno-pie \
             -mcmodel=medany -nostdlib \
             -Wall -Wextra -Wno-unused-parameter \
             -ffunction-sections -fdata-sections \
             -Iinclude
+
+# DEBUG=1 swaps the optimisation level and enables full debug info
+# + frame pointers + the HAL_DEBUG macro (which lights up HAL_ASSERT).
+# Frame pointers are required for the panic dumper's stack walk
+# (src/panic.c) to produce more than two frames; without them the
+# walk falls back to printing just mepc + ra. CI debug builds and
+# `make DEBUG=1` for local gdb-stub work both flip this. Consumer
+# firmwares should mirror this in their own Makefiles to keep the
+# layout consistent — picolibc headers don't depend on HAL_DEBUG but
+# panic.h's HAL_ASSERT macro does.
+ifeq ($(DEBUG),1)
+# -fsanitize=undefined enables UBSan; -fsanitize-trap=undefined turns
+# its runtime calls into ud2-style traps instead of __ubsan_handle_*
+# library calls (which would need libubsan we don't ship in
+# freestanding). The resulting traps land in __trap_entry as
+# "illegal instruction" and pretty-print through the panic dumper —
+# so UB at runtime gives you a backtrace to the offending line.
+# zig cc enables UBSan implicitly at -Og without these flags, which
+# is why we set them explicitly rather than -fno-sanitize=all.
+CFLAGS   += -Og -g3 -gdwarf-4 -fno-omit-frame-pointer -DHAL_DEBUG \
+            -fsanitize=undefined -fsanitize-trap=undefined
+else
+CFLAGS   += -Os -fno-sanitize=all
+endif
 
 # -ffunction-sections + -fdata-sections puts every function and
 # global into its own ELF section. Combined with `-Wl,--gc-sections`

@@ -146,6 +146,101 @@ rvvm firmware.bin -portfwd udp/2007=7   # forward host:2007 → guest:7
 | [`examples/net-hello/`](examples/net-hello/) | full TCP/IP — DHCP client gets an IP, UDP echo server on port 7 |
 | [`examples/ui-hello/`](examples/ui-hello/) | menu primitives — top-level menu, file picker, yes/no dialog, message banner |
 
+## Debugging
+
+The HAL ships a panic / assert / clean-exit primitive set built around
+a single structured UART format. Three call sites that matter:
+
+| call | when |
+|---|---|
+| `hal_panic("msg %d", x)` | unrecoverable error; capture call site, dump regs + backtrace, hang |
+| `hal_exit(code)`         | clean shutdown; logs `!!HAL-EXIT code=N`, writes SYSCON_POWEROFF, RVVM exits |
+| `HAL_CHECK(cond)`        | always-live invariant; failure routes to `hal_panic` |
+| `HAL_ASSERT(cond)`       | debug-only invariant; compiles to `((void)0)` without `-DHAL_DEBUG` |
+
+Hardware traps that aren't handled (load-fault, illegal instruction,
+ecall from M, page-fault, …) reach the same dumper via the trap path
+in `src/irq.c`, so any bug — your code or the HAL's — produces an
+identical, parseable frame.
+
+### The panic format
+
+Every panic emits a stable `!!HAL-PANIC-V1` block on UART:
+
+```
+!!HAL-PANIC-V1 ============================================
+   cause      : load access fault (mcause=0x05)
+   mepc       : 0x0000000080003a4c
+   mtval      : 0x00000000deadbeef
+   mstatus    : 0x0000000000001880
+   mtvec      : 0x0000000080012080
+   mhartid    : 0
+   ----
+   x0   zero  : 0x0000000000000000
+   x1   ra    : 0x0000000080004f10
+   ...
+   x31  t6    : 0x0000000000000000
+   ----
+   stack:
+     #0  0x0000000080003a4c
+     #1  0x0000000080004f10
+     #2  0x0000000080008a04
+   ...
+!!HAL-PANIC-V1 end ========================================
+```
+
+The format is versioned (V1) so future changes can be tooling-aware.
+Re-entrant panics (a fault inside the dumper itself, or a parallel
+panic on another hart) short-circuit to `wfi` so the on-wire dump
+stays readable.
+
+### Symbolicating the dump
+
+```sh
+rvvm firmware.bin -nogui 2>&1 | tee /tmp/uart.log
+./tools/decode-panic firmware.elf < /tmp/uart.log
+```
+
+`decode-panic` rewrites every `0x80…` literal through `addr2line`,
+yielding `function at file:line` annotations next to each PC, register
+value, and backtrace frame. Picks `llvm-addr2line` first, then any
+`riscv64-*-addr2line`, then plain `addr2line` (which only works if
+your host binutils was built multi-arch). Override with
+`RVVM_ADDR2LINE=/path/to/addr2line`.
+
+For the backtrace to extend past `mepc + ra`, build the HAL **and**
+your firmware with `make DEBUG=1` (frame pointers are required for
+the fp-walk).
+
+### `make DEBUG=1`
+
+Swaps `-Os` for `-Og -g3 -gdwarf-4 -fno-omit-frame-pointer`, adds
+`-DHAL_DEBUG` (lights up `HAL_ASSERT`), and turns on trap-mode UBSan
+(`-fsanitize=undefined -fsanitize-trap=undefined`). UB at runtime
+becomes an "illegal instruction" trap that prints through the panic
+dumper, so signed overflow / shift-out-of-range / null-deref get
+caught with a backtrace to the offending line.
+
+Mirror the flag in your firmware's own Makefile so prototype
+visibility (the `HAL_ASSERT` macro in particular) matches the HAL
+build.
+
+### Live debugging via gdb
+
+RVVM has a built-in gdbstub. Launch the VM paused with the gdbstub
+flag (see RVVM's own `-h`), then attach any RV64-aware gdb:
+
+```sh
+gdb-multiarch firmware.elf
+(gdb) target remote :1234
+(gdb) break kmain
+(gdb) continue
+```
+
+Source-level breakpoints, register inspection, and step are all
+available. Loading the ELF gives gdb the symbols + DWARF that the
+panic dumper otherwise needs `decode-panic` to resolve.
+
 ## Real-world consumers
 
 | consumer | uses |

@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# decode-panic — resolve HAL panic-dump addresses against a firmware ELF.
+#
+# Usage:
+#   ./tools/decode-panic <firmware.elf> < uart.log
+#   rvvm firmware.bin -nogui 2>&1 | ./tools/decode-panic firmware.elf
+#
+# Reads a UART transcript on stdin, finds every 0x[0-9a-f]+ literal,
+# and rewrites it through addr2line so the dumped registers and
+# backtrace frames carry source locations. Lines that don't contain
+# an address pass through unchanged.
+#
+# Picks an addr2line in this order:
+#   1. $RVVM_ADDR2LINE (env override)
+#   2. llvm-addr2line                        — LLVM, multi-arch
+#   3. riscv64-elf-addr2line                 — GNU binutils crosstool
+#   4. riscv64-unknown-elf-addr2line         — alternate triple
+#   5. riscv64-linux-gnu-addr2line           — Debian/Ubuntu naming
+#   6. addr2line                             — last resort, may not
+#                                              understand RV64 ELFs
+#                                              if it's a single-arch
+#                                              host-binutils build
+#
+# Resolved lines look like:
+#   x1   ra    : 0x0000000080004f10  hal_printf at src/uart.c:118
+#
+# Unresolved (addr2line returned ?? or :0) addresses keep their
+# original form, so the script never makes output worse.
+
+set -eu -o pipefail
+
+if [[ $# -lt 1 ]]; then
+    printf 'usage: %s <firmware.elf>\n' "$0" >&2
+    printf '       reads UART transcript on stdin\n' >&2
+    exit 2
+fi
+
+elf=$1
+if [[ ! -r $elf ]]; then
+    printf 'decode-panic: %s: not readable\n' "$elf" >&2
+    exit 2
+fi
+
+addr2line=${RVVM_ADDR2LINE:-}
+if [[ -z $addr2line ]]; then
+    for cand in llvm-addr2line riscv64-elf-addr2line \
+                riscv64-unknown-elf-addr2line \
+                riscv64-linux-gnu-addr2line addr2line; do
+        if command -v "$cand" >/dev/null 2>&1; then
+            addr2line=$cand
+            break
+        fi
+    done
+fi
+if [[ -z $addr2line ]]; then
+    printf 'decode-panic: no addr2line found in PATH\n' >&2
+    printf '              set RVVM_ADDR2LINE=/path/to/addr2line\n' >&2
+    exit 2
+fi
+
+# resolve <hexaddr> → "<func> at <file:line>" or "" if unresolved.
+# -f prints the function name, -p formats both on one line, -C demangles
+# (no-op for C but harmless), -e selects the ELF.
+resolve() {
+    local addr=$1
+    local out
+    out=$("$addr2line" -fpCe "$elf" "$addr" 2>/dev/null) || return 1
+    # addr2line prints "?? at ??:0" / "?? ??:?" when it can't resolve;
+    # those rows are noise, drop them.
+    case "$out" in
+        *'??'*|*':0'*|*':?'*) return 1 ;;
+    esac
+    printf '%s' "$out"
+}
+
+# Stream-process. We rewrite each line by splicing resolved info
+# next to the first 0x[0-9a-fA-F]{6,16} match. Multiple addresses on
+# one line (rare in our format, but possible in #N stack frames) all
+# get processed.
+while IFS= read -r line || [[ -n $line ]]; do
+    out=$line
+    # Extract addresses, dedupe per line, append resolutions inline.
+    # The HAL dumper formats addresses as 0x followed by 1..16 hex
+    # digits. Match that to avoid eating embedded numbers.
+    while [[ $out =~ (0x[0-9a-fA-F]{6,16}) ]]; do
+        match=${BASH_REMATCH[1]}
+        if info=$(resolve "$match"); then
+            # Splice " ← <info>" once after the first occurrence,
+            # then mark the address resolved by replacing it with a
+            # sentinel form 0X<...> so the next loop iteration finds
+            # the next address. Restore at the end.
+            out=${out/$match/${match/0x/0X}  ← $info}
+        else
+            # Couldn't resolve. Mark it consumed so the loop moves on.
+            out=${out/$match/${match/0x/0X}}
+        fi
+    done
+    # Restore the 0X sentinel back to 0x for output.
+    printf '%s\n' "${out//0X/0x}"
+done
