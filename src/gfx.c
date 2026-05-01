@@ -5,6 +5,10 @@
 #include "rvvm.h"
 #include <stddef.h>
 
+/* memset / memcpy live in string_asm.S (or string.c if HAL_NO_ASM_STRING).
+ * Either way they're freestanding-safe; we don't pull <string.h>. */
+extern void *memset(void *dst, int c, size_t n);
+
 /* str equal helper — string.h's strcmp isn't pulled into freestanding. */
 static bool str_eq(const char *a, const char *b) {
     while (*a && *a == *b) { a++; b++; }
@@ -108,6 +112,47 @@ bool gfx_init_fdt(gfx_t *g, const fdt_t *fdt, uint32_t want_w, uint32_t want_h) 
     return false;
 }
 
+/* Single-row fill — the workhorse under gfx_fill / gfx_rect.
+ *
+ * Three paths, in decreasing order of preference:
+ *
+ *   1. Uniform-byte pixels (b0 == b1 == b2 == b3). Common for clears
+ *      (0x00 black, 0xFFFFFFFF white, 0x80808080 gray, …). Defers to
+ *      memset, which is the asm-unrolled string_asm.S version when
+ *      HAL_ASM_STRING is on — ~4 GiB/s vs the per-pixel sw loop.
+ *
+ *   2. Pair-pack: two 32-bit pixels into a 64-bit register, one `sd`
+ *      per 2 px. Compiler tracks alignment; we pre-step a single
+ *      32-bit pixel if the row pointer isn't 8-byte aligned (happens
+ *      when gfx_rect's `x` is odd). 2× over the per-pixel sw loop.
+ *
+ *   3. Tail / unaligned-prefix: scalar sw for the up-to-1 leading or
+ *      trailing pixel that the pair loop can't cover.
+ *
+ * Marked static-inline to let the compiler specialise per call site
+ * (gfx_fill knows w == g->width; gfx_rect doesn't). */
+static inline void gfx_fill_row(uint32_t *p, uint32_t w, uint32_t pix) {
+    /* Path 1: uniform-byte → memset. Detect by xor-folding. */
+    uint8_t b0 = (uint8_t)pix;
+    if (((pix >>  8) & 0xFF) == b0 &&
+        ((pix >> 16) & 0xFF) == b0 &&
+        ((pix >> 24) & 0xFF) == b0) {
+        memset(p, b0, (size_t)w * 4);
+        return;
+    }
+
+    /* Path 2: pair-pack. Pre-align to 8 bytes if needed (odd x). */
+    if (((uintptr_t)p & 7) && w) {
+        *p++ = pix;
+        w--;
+    }
+    uint64_t pix64 = ((uint64_t)pix << 32) | pix;
+    uint64_t *p64  = (uint64_t *)p;
+    uint32_t pairs = w >> 1;
+    for (uint32_t i = 0; i < pairs; i++) p64[i] = pix64;
+    if (w & 1) ((uint32_t *)(p64 + pairs))[0] = pix;
+}
+
 void gfx_fill(const gfx_t *g, uint32_t color) {
     if (g->backend == GFX_BACKEND_NONE) return;
     uint32_t pix = color;
@@ -116,10 +161,23 @@ void gfx_fill(const gfx_t *g, uint32_t color) {
         uint32_t b = (color >>  0) & 0xFF;
         pix = (color & 0xFF00FF00U) | (b << 16) | r;
     }
-    /* Row-by-row to honour a stride > width (simplefb may pad). */
+
+    /* Contiguous fast path: when stride matches width, the framebuffer
+     * is one flat run — fill in a single call instead of per-row. The
+     * uniform-byte sub-case collapses to a single memset across the
+     * whole surface. */
+    if (g->stride_px == g->width) {
+        gfx_fill_row(g->vram, g->width * g->height, pix);
+        return;
+    }
+
+    /* Per-row path (simplefb with stride > width padding). Pointer
+     * strength-reduced — increment by stride_px each iter instead of
+     * recomputing y * stride_px from scratch. */
+    uint32_t *p = g->vram;
     for (uint32_t y = 0; y < g->height; y++) {
-        uint32_t *row = &g->vram[y * g->stride_px];
-        for (uint32_t x = 0; x < g->width; x++) row[x] = pix;
+        gfx_fill_row(p, g->width, pix);
+        p += g->stride_px;
     }
 }
 
@@ -136,8 +194,11 @@ void gfx_rect(const gfx_t *g, uint32_t x, uint32_t y,
         uint32_t b = (color >>  0) & 0xFF;
         pix = (color & 0xFF00FF00U) | (b << 16) | r;
     }
+
+    /* Pointer strength-reduced (no per-row mul). */
+    uint32_t *p = &g->vram[y * g->stride_px + x];
     for (uint32_t row = 0; row < h; row++) {
-        uint32_t *p = &g->vram[(y + row) * g->stride_px + x];
-        for (uint32_t col = 0; col < w; col++) p[col] = pix;
+        gfx_fill_row(p, w, pix);
+        p += g->stride_px;
     }
 }

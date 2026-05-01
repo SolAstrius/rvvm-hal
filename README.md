@@ -2,14 +2,23 @@
 
 A bare-metal Hardware Abstraction Layer for [RVVM](https://github.com/LekKit/RVVM)
 — the lightweight RISC-V emulator. Target audience: people writing
-M-mode firmware that runs directly on RVVM with no SBI / no kernel,
-who want to ship anything from a 7 KB hello-world to a full unikernel
-(libc + filesystem + TCP/IP + SMP) without rolling each piece by hand.
+M-mode (or S-mode-under-SBI) firmware that runs directly on RVVM
+with no kernel, who want to ship anything from a 7 KB hello-world
+to a full unikernel (libc + filesystem + TCP/IP + SMP) without
+rolling each piece by hand.
 
 The base HAL is ~2K lines of C exposing every device RVVM emulates.
 Optional layers add picolibc, FatFs, and lwIP; each is opt-in via a
 build flag and contributes zero bytes to firmwares that don't use it
-(`-Wl,--gc-sections` trims aggressively).
+(`-Wl,--gc-sections` trims aggressively, and `HAL_LTO=1` extends the
+trim across translation units).
+
+The privileged surface is split via two compile-time knobs
+(`HAL_PRIV` × `HAL_PLAT`) so the same source builds for **M-mode
+bare-metal + CLINT/PLIC** (default, today's RVVM target) or for
+**S-mode-under-OpenSBI**, with reserved slots for `m_clic` (CLIC
+controller) and `s_aia` (IMSIC/APLIC) backends. Adding a new backend
+is a single `src/plat_<name>.c` file — see `include/plat.h`.
 
 ## Drivers — always available
 
@@ -49,6 +58,38 @@ into RVVM's source.
 Each flag must be set on **both** the HAL build and your firmware's
 own CFLAGS so prototypes match symbols. Without flags, the HAL stays
 at its bare-metal baseline (~30 KiB compiled, ~7 KiB after gc).
+
+## Privilege / platform — `HAL_PRIV` × `HAL_PLAT`
+
+The privileged surface (CSR aliases, IPI, timer, interrupt controller,
+hart bring-up) is abstracted via `include/priv.h` (CSR aliases) and
+`include/plat.h` (platform ops). Two knobs select the build:
+
+| `HAL_PRIV` | `HAL_PLAT` (default `m_clint`) | what runs |
+|---|---|---|
+| `m` (default) | `m_clint` | M-mode bare-metal on the stock RVVM machine. CLINT for IPI/timer, PLIC for IRQs. Today's only fully-tested target. |
+| `s` | `s_sbi` | S-mode payload under OpenSBI. SBI ecalls for IPI / timer / hart-start; PLIC at the S-mode context. Sstc fast-path auto-engages when the FDT advertises it. |
+| `m` | `m_clic` (planned) | M-mode + CLIC interrupt controller. Reserved file shell. |
+| `s` | `s_aia` (planned) | S-mode + IMSIC/APLIC + Sstc. Reserved file shell. |
+
+Adding a backend = drop a new `src/plat_<name>.c` implementing the
+~12 functions in `plat.h`. Sync exception handling, panic dumper,
+trap entry, and `irq.c` dispatch are all privilege-portable through
+the `priv.h` aliases.
+
+S-mode firmware builds at load address `0x80200000` via `link_s.ld`;
+run as `rvvm <opensbi-fw_jump.bin> -k firmware.bin`. See
+[`examples/probe-s/`](examples/probe-s/) for a working setup.
+
+## Compile-time perf knobs
+
+| flag | default | effect |
+|---|---|---|
+| `HAL_OPT` | `s` (size-leaning) | `-O$(HAL_OPT)`. `HAL_OPT=2` for speed-leaning. |
+| `HAL_LTO` | `` (off) | `HAL_LTO=1` enables full LTO. Requires LLVM-aware linker (`zig cc` / `lld` / `clang`). With LTO, consumer firmware.bin shrinks ~40-50% (the linker drops unused HAL surface across TUs) and `irq-entry` paths get inlined. The bench / probe / probe-s examples default to `HAL_LTO=1`. |
+| `HAL_MARCH_EXTS` | `zba zbb zbs zicond zicclsm zicboz zcb` | RISC-V extensions to enable beyond `rv64gc`. Defaults match what RVVM advertises in misa + `riscv,isa-extensions`. Compiler emits `czero.eqz/nez`, `sh*add`, `sext.b/h`, etc. |
+| `HAL_NO_ASM_STRING` | `` (off) | `HAL_NO_ASM_STRING=1` falls back to the C `string.c`. The default asm versions in `string_asm.S` are 2-4× faster on memcpy/memmove. |
+| `HAL_NO_SSTC` | `` (off) | A/B knob for the S+SBI build. `HAL_NO_SSTC=1` forces the `sbi_set_timer` ecall path even when Sstc is advertised. |
 
 ## Build
 
@@ -145,6 +186,8 @@ rvvm firmware.bin -portfwd udp/2007=7   # forward host:2007 → guest:7
 | [`examples/eth-hello/`](examples/eth-hello/) | RTL8169 raw L2: ARP request → reply, decode |
 | [`examples/net-hello/`](examples/net-hello/) | full TCP/IP — DHCP client gets an IP, UDP echo server on port 7 |
 | [`examples/ui-hello/`](examples/ui-hello/) | menu primitives — top-level menu, file picker, yes/no dialog, message banner |
+| [`examples/probe-s/`](examples/probe-s/) | **S-mode under OpenSBI** — same drivers, `csrr sstatus` smoke test, Sstc-vs-ecall timer comparison |
+| [`examples/bench/`](examples/bench/) | microbenchmarks — memcpy/memset/memmove × 1 MiB, gfx_rect 1024×256, self-IPI trap entry |
 
 ## Debugging
 

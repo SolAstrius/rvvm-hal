@@ -1,9 +1,9 @@
 #include "smp.h"
 #include "fdt.h"
-#include "rvvm.h"
+#include "plat.h"
 #include "uart.h"
-#include "mmio.h"
 #include <stddef.h>
+#include <stdint.h>
 
 /* Per-hart command slot — primary writes (fn, arg), secondary reads
  * after MSIP wake. `volatile` forces actual loads/stores; cross-hart
@@ -18,8 +18,7 @@ static volatile struct {
  * after the entry returns. smp_wait spins on this. */
 static volatile uint8_t smp_running[SMP_MAX_HARTS];
 
-static uint32_t  hart_count_v = 1;        /* primary always present */
-static uintptr_t clint_base   = RVVM_CLINT_BASE;
+static uint32_t hart_count_v = 1;        /* primary always present */
 
 /* String compare for FDT property values (no <string.h> in freestanding,
  * and the existing helper in fdt.c is private to that TU). */
@@ -73,9 +72,7 @@ static uint32_t count_cpu_nodes(const fdt_t *fdt) {
 }
 
 uint32_t smp_this_hart(void) {
-    uint64_t v;
-    __asm__ volatile ("csrr %0, mhartid" : "=r"(v));
-    return (uint32_t)v;
+    return plat_this_hart();
 }
 
 uint32_t smp_hart_count(void) { return hart_count_v; }
@@ -83,15 +80,17 @@ uint32_t smp_hart_count(void) { return hart_count_v; }
 void smp_init(const fdt_t *fdt) {
     if (!fdt) return;
 
-    /* Discover CLINT base — secondaries' initial wake path in start.S
-     * uses the hardcoded RVVM default (0x02000000), but smp_start uses
-     * the discovered base so non-default machines still work as long
-     * as their CLINT is at the default at the time of first wake. */
+    /* Discover CLINT base and forward to the platform layer.
+     * Secondaries' initial wake path in start.S uses the hardcoded
+     * RVVM default (0x02000000) — smp_start (via plat_ipi_send) uses
+     * whatever plat_init was given, so non-default machines still
+     * work as long as their CLINT is at the default at the time of
+     * the very first wake. */
     uint32_t clint_off = fdt_find_compatible(fdt, "sifive,clint0");
     if (clint_off != UINT32_MAX) {
         uint64_t at = 0;
         if (fdt_node_reg64(fdt, clint_off, 0, &at, NULL) && at) {
-            clint_base = (uintptr_t)at;
+            plat_init(0, (uintptr_t)at);
         }
     }
 
@@ -103,6 +102,15 @@ void smp_init(const fdt_t *fdt) {
         n = SMP_MAX_HARTS;
     }
     hart_count_v = n;
+
+    /* Bring secondaries into the park loop. M+CLINT no-op (start.S
+     * already parked them at reset); S+SBI ecalls each one in. After
+     * this loop, every hart in [1, n) is reachable via plat_ipi_send. */
+    uint32_t self = plat_this_hart();
+    for (uint32_t h = 0; h < n; h++) {
+        if (h == self) continue;
+        plat_hart_bringup_park(h);
+    }
 }
 
 bool smp_start(uint32_t hartid, smp_entry_t fn, void *arg) {
@@ -114,11 +122,10 @@ bool smp_start(uint32_t hartid, smp_entry_t fn, void *arg) {
     smp_cmd[hartid].fn  = fn;
     smp_cmd[hartid].arg = arg;
     smp_running[hartid] = 1;
-    /* Order: command + running flag must be visible before the MSIP
-     * write reaches CLINT, otherwise the secondary could wake and
-     * read a stale (NULL) fn slot. */
-    __asm__ volatile ("fence rw,rw" ::: "memory");
-    mmio_w32(clint_base + hartid * 4, 1);
+    /* plat_ipi_send issues a fence before delivering the wake, so the
+     * command + running flag are visible to the secondary before it
+     * observes the IPI. */
+    plat_ipi_send(hartid);
     return true;
 }
 

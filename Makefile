@@ -14,6 +14,73 @@ CFLAGS   := -ffreestanding -fno-stack-protector -fno-pie \
             -ffunction-sections -fdata-sections \
             -Iinclude
 
+# Target ISA extensions beyond rv64gc. Selected to match what RVVM
+# advertises in its riscv_exts string (src/rvvm.c) — running on RVVM
+# we never trap on these. On real silicon, consumers should override
+# HAL_MARCH_EXTS to match their target chip.
+#
+# Why these:
+#   zba zbb zbs   Bitmanip — compiler emits sh*add, ctz, andn, min/max,
+#                 sext.b/h. Pervasive small wins.
+#   zicond        czero.{eqz,nez} for branch-free select.
+#   zicclsm       Hardware-supported misaligned scalar L/S — lets the
+#                 compiler emit unaligned loads/stores without the
+#                 byte-fallback path.
+#   zicboz        cbo.zero — 64-byte cache-block zero in one insn;
+#                 useful if/when memset gets a Zicboz fast path.
+#   zcb           Compressed bitmanip + load/store — smaller code.
+#
+# zig cc routes -march= to -target-cpu, so we use clang's
+# -target-feature mechanism via -Xclang to add each extension.
+HAL_MARCH_EXTS ?= zba zbb zbs zicond zicclsm zicboz zcb
+CFLAGS   += $(foreach ext,$(HAL_MARCH_EXTS),-Xclang -target-feature -Xclang +$(ext))
+
+# Privilege mode + platform backend.
+#
+#   HAL_PRIV  ∈ {m, s}     — selects mstatus/mie/... vs sstatus/sie/...
+#                            CSR aliases in include/priv.h. Default: m.
+#   HAL_PLAT  ∈ {m_clint,  — picks src/plat_<plat>.c, the file
+#                s_sbi,      implementing IPI / timer / intc for the
+#                m_clic,     target machine.
+#                s_aia}     Default: m_clint (M-mode + CLINT + PLIC),
+#                            matching the stock RVVM machine.
+#
+# Today only m_clint is implemented; the other names are reserved for
+# future backends (see include/plat.h header comment for the design).
+HAL_PRIV ?= m
+HAL_PLAT ?= m_clint
+
+ifeq ($(HAL_PRIV),m)
+CFLAGS   += -DHAL_PRIV_M=1
+else ifeq ($(HAL_PRIV),s)
+CFLAGS   += -DHAL_PRIV_S=1
+else
+$(error HAL_PRIV must be 'm' or 's' (got '$(HAL_PRIV)'))
+endif
+
+# Sanity-check: not every (priv, plat) pair makes sense. m_clint needs
+# M-mode; s_sbi needs S-mode; etc. Reject obviously-wrong combos early
+# so the failure isn't a confusing CSR-illegal trap at runtime.
+ifeq ($(HAL_PLAT),m_clint)
+ifneq ($(HAL_PRIV),m)
+$(error HAL_PLAT=m_clint requires HAL_PRIV=m)
+endif
+else ifeq ($(HAL_PLAT),s_sbi)
+ifneq ($(HAL_PRIV),s)
+$(error HAL_PLAT=s_sbi requires HAL_PRIV=s)
+endif
+else ifeq ($(HAL_PLAT),m_clic)
+ifneq ($(HAL_PRIV),m)
+$(error HAL_PLAT=m_clic requires HAL_PRIV=m)
+endif
+else ifeq ($(HAL_PLAT),s_aia)
+ifneq ($(HAL_PRIV),s)
+$(error HAL_PLAT=s_aia requires HAL_PRIV=s)
+endif
+else
+$(error HAL_PLAT='$(HAL_PLAT)' is not a known backend)
+endif
+
 # DEBUG=1 swaps the optimisation level and enables full debug info
 # + frame pointers + the HAL_DEBUG macro (which lights up HAL_ASSERT).
 # Frame pointers are required for the panic dumper's stack walk
@@ -35,7 +102,22 @@ ifeq ($(DEBUG),1)
 CFLAGS   += -Og -g3 -gdwarf-4 -fno-omit-frame-pointer -DHAL_DEBUG \
             -fsanitize=undefined -fsanitize-trap=undefined
 else
-CFLAGS   += -Os -fno-sanitize=all
+# Optimisation level — `s` (size) is the default; `2` is a speed-leaning
+# setting that unrolls loops more aggressively and inlines wider, at
+# some binary-size cost. Override with `make HAL_OPT=2` for a perf-
+# leaning build of libhal.a.
+HAL_OPT  ?= s
+CFLAGS   += -O$(HAL_OPT) -fno-sanitize=all
+endif
+
+# Optional: HAL_LTO=1 turns on LLVM thin/full LTO across the libhal.a
+# build. Object files become LLVM bitcode (llvm-ar handles those);
+# consumer firmwares that also pass -flto at link time will then
+# inline HAL functions across translation-unit boundaries (mmio
+# accessors, plat_* operations, atomic primitives, fdt walkers).
+# Cost: link time ~3-5×, build flow unchanged otherwise.
+ifeq ($(HAL_LTO),1)
+CFLAGS   += -flto=full
 endif
 
 # -ffunction-sections + -fdata-sections puts every function and
@@ -57,6 +139,13 @@ endif
 #   $(MAKE) -C $(HAL) HAL_NO_SMP=1
 ifeq ($(HAL_NO_SMP),1)
 CFLAGS   += -DHAL_NO_SMP
+endif
+
+# Optional: HAL_NO_SSTC=1 forces the S+SBI backend off the Sstc
+# fast-path even when the FDT advertises it. Used for A/B comparison
+# of the direct-CSR vs sbi_set_timer ecall paths; not for normal use.
+ifeq ($(HAL_NO_SSTC),1)
+CFLAGS   += -DHAL_NO_SSTC
 endif
 
 # Optional: HAL_PICOLIBC=min|std links picolibc into firmwares that
@@ -103,6 +192,23 @@ CFLAGS   += -DHAL_LWIP \
 endif
 
 SRCS     := $(wildcard src/*.c) $(wildcard src/*.S)
+
+# Strip every plat_*.c, then add back only the one the build selected.
+# Keeps `make HAL_PLAT=...` deterministic regardless of which backend
+# files happen to exist on disk (unselected ones may be in-progress
+# stubs that don't compile yet).
+SRCS     := $(filter-out $(wildcard src/plat_*.c),$(SRCS))
+SRCS     += src/plat_$(HAL_PLAT).c
+
+# The boot path differs between privilege modes — start.S takes the
+# RVVM-bare-metal reset-PC entry; start_s.S takes the SBI handoff ABI.
+# Build the right one for HAL_PRIV.
+ifeq ($(HAL_PRIV),m)
+SRCS     := $(filter-out src/start_s.S,$(SRCS))
+else
+SRCS     := $(filter-out src/start.S,$(SRCS))
+endif
+
 ifeq ($(HAL_NO_SMP),1)
 SRCS     := $(filter-out src/smp.c,$(SRCS))
 endif
@@ -112,6 +218,24 @@ ifeq ($(HAL_PICOLIBC),)
 SRCS     := $(filter-out src/picolibc_hooks.c,$(SRCS))
 else
 SRCS     := $(filter-out src/string.c,$(SRCS))
+endif
+
+# string.S is the asm-unrolled memcpy/memset/memmove. Default-on; opt
+# out with HAL_NO_ASM_STRING=1 (falls back to the C versions in
+# string.c). The asm versions are ~2× faster than the C ones on the
+# aligned hot path, written in pure RV64I so they compile under any
+# extension subset. When picolibc is on, *both* are excluded since
+# picolibc supplies its own optimised mem*/str* family.
+ifeq ($(HAL_NO_ASM_STRING),1)
+SRCS     := $(filter-out src/string_asm.S,$(SRCS))
+else
+ifeq ($(HAL_PICOLIBC),)
+# asm version active: drop the C string.c so symbols don't collide
+SRCS     := $(filter-out src/string.c,$(SRCS))
+else
+# picolibc on → string.c already excluded above; also exclude .S
+SRCS     := $(filter-out src/string_asm.S,$(SRCS))
+endif
 endif
 ifneq ($(HAL_FATFS),1)
 # Without HAL_FATFS, fatfs_disk.c is a no-op (#ifdef gates everything).

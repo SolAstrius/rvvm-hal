@@ -1,31 +1,27 @@
-# Reference: how to build a bare-metal RVVM firmware that consumes
-# rvvm-hal as a sibling library. Real consumers would have HAL as a
-# git submodule under vendor/ — here it's just two directories up.
-
 HAL      := ../..
 TARGET   := riscv64-freestanding-none
 CC       := zig cc -target $(TARGET)
 OBJCOPY  := llvm-objcopy
+RVVM     ?= /home/sol/repos/RVVM/release.linux.x86_64/rvvm_x86_64
 
-# zig cc + lld is LTO-aware, so we default to LTO on for examples — the
-# linker drops unused HAL symbols beyond what `--gc-sections` alone
-# catches, typically halving firmware.bin size. Override with
-# `make HAL_LTO=` to disable. HAL_OPT mirrors the libhal.a knob.
+# HAL_OPT and HAL_LTO mirror the libhal.a knobs so the firmware ELF
+# is built consistently with the archive. With HAL_LTO=1 the consumer
+# must also pass -flto so the linker can inline across .o boundaries.
 HAL_OPT ?= s
-HAL_LTO ?= 1
+HAL_LTO ?= 1   # bench is a microbenchmark — LTO drops unused HAL surface (~43% smaller bin)
 
 CFLAGS   := -O$(HAL_OPT) -ffreestanding -fno-stack-protector -fno-pie \
             -mcmodel=medany -nostdlib \
             -Wall -Wextra -Wno-unused-parameter \
             -I$(HAL)/include
 ifeq ($(HAL_LTO),1)
-CFLAGS    += -flto=full
-LTOFLAGS  := -flto=full
+CFLAGS   += -flto=full
+LTOLDFLAGS := -flto=full
 else
-LTOFLAGS  :=
+LTOLDFLAGS :=
 endif
 
-LDFLAGS  := -nostdlib -static -Wl,-T,$(HAL)/link.ld $(LTOFLAGS)
+LDFLAGS  := -nostdlib -static -Wl,-T,$(HAL)/link.ld $(LTOLDFLAGS)
 
 OBJS := build/main.o
 
@@ -47,12 +43,9 @@ firmware.bin: firmware.elf
 	@printf '\nBuilt %s (%s bytes)\n' "$@" "$$(stat -c %s $@)"
 
 run: firmware.bin
-	rvvm firmware.bin -bochs_display -nonet -nosound
-
-run-headless: firmware.bin
-	rvvm firmware.bin -nogui -nonet -nosound
+	$(RVVM) firmware.bin -nogui -nonet -nosound
 
 clean:
 	rm -rf build firmware.elf firmware.bin
 
-.PHONY: all run run-headless clean
+.PHONY: all run clean

@@ -28,6 +28,8 @@
  * regardless of which hart printed it. */
 
 #include "panic.h"
+#include "priv.h"
+#include "plat.h"
 #include "uart.h"
 #include "rvvm.h"
 #include "mmio.h"
@@ -134,12 +136,14 @@ static void walk_stack(uintptr_t seed_pc, uintptr_t seed_ra, uintptr_t fp) {
 }
 
 /* CSR readers for context that the trap path doesn't pass through
- * the regs frame (mtval, mstatus, mhartid). Safe to call from any
- * hart; cheap CSR reads. */
-static inline uint64_t read_mtval(void)   { uint64_t v; __asm__ volatile("csrr %0, mtval"   : "=r"(v)); return v; }
-static inline uint64_t read_mstatus(void) { uint64_t v; __asm__ volatile("csrr %0, mstatus" : "=r"(v)); return v; }
-static inline uint64_t read_mhartid(void) { uint64_t v; __asm__ volatile("csrr %0, mhartid" : "=r"(v)); return v; }
-static inline uint64_t read_mtvec(void)   { uint64_t v; __asm__ volatile("csrr %0, mtvec"   : "=r"(v)); return v; }
+ * the regs frame. Resolves to the right CSR for the build's privilege
+ * mode via priv.h's CSR_TVAL / CSR_STATUS / CSR_TVEC aliases. The
+ * dump still labels them with their M-mode names ("mtval", "mstatus",
+ * "mtvec") for now — when the S-mode build lands, we'll switch the
+ * labels to the active privilege's names too. */
+static inline uint64_t read_xtval(void)   { uint64_t v; __asm__ volatile("csrr %0, " HAL_CSR(CSR_TVAL)   : "=r"(v)); return v; }
+static inline uint64_t read_xstatus(void) { uint64_t v; __asm__ volatile("csrr %0, " HAL_CSR(CSR_STATUS) : "=r"(v)); return v; }
+static inline uint64_t read_xtvec(void)   { uint64_t v; __asm__ volatile("csrr %0, " HAL_CSR(CSR_TVEC)   : "=r"(v)); return v; }
 
 /* The shared core. `regs` is a 32-slot GPR array (slot index ==
  * register number; slot 0 unused). `ra_seed` and `fp_seed` are used
@@ -155,13 +159,13 @@ static void dump_and_halt(uint64_t  mcause,
         for (;;) __asm__ volatile ("wfi");
     }
 
-    uint64_t mtval   = read_mtval();
-    uint64_t mstatus = read_mstatus();
-    uint64_t hartid  = read_mhartid();
-    uint64_t mtvec   = read_mtvec();
+    uint64_t mtval   = read_xtval();
+    uint64_t mstatus = read_xstatus();
+    uint64_t hartid  = plat_this_hart();
+    uint64_t mtvec   = read_xtvec();
 
     bool is_interrupt = (mcause >> 63) & 1;
-    uint64_t code = mcause & ~(1ULL << 63);
+    uint64_t code = mcause & ~CAUSE_INTERRUPT_BIT;
 
     uart_puts("\n!!HAL-PANIC-V1 ============================================\n");
     if (is_interrupt) {
@@ -203,7 +207,7 @@ void hal_panic_from_trap(uint64_t mcause, uint64_t mepc, uint64_t *regs) {
 /* Software entry. Capture our own ra and fp, synthesise a regs frame.
  * mcause bit 63 set + low bits = 24 ("user-defined") flags this as
  * software-induced for tools/decode-panic. */
-#define MCAUSE_SOFTWARE_PANIC ((1ULL << 63) | 24)
+#define MCAUSE_SOFTWARE_PANIC (CAUSE_INTERRUPT_BIT | 24)
 
 void hal_panic_v(const char *fmt, va_list ap) {
     /* Print the narrative first so it appears above the dump even if
