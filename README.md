@@ -7,6 +7,18 @@ with no kernel, who want to ship anything from a 7 KB hello-world
 to a full unikernel (libc + filesystem + TCP/IP + SMP) without
 rolling each piece by hand.
 
+<p align="center">
+  <a href="assets/gallery/scev-gba-firered.png"><img src="assets/gallery/scev-gba-firered.png" width="240" alt="Pokemon FireRed title screen"></a>
+  <a href="assets/gallery/scev-gameboy-zelda-ooa-intro.png"><img src="assets/gallery/scev-gameboy-zelda-ooa-intro.png" width="160" alt="Zelda Oracle of Ages — Link on Epona"></a>
+  <a href="assets/gallery/scev-gameboy-zelda-ooa-title.png"><img src="assets/gallery/scev-gameboy-zelda-ooa-title.png" width="160" alt="Zelda Oracle of Ages title"></a>
+  <a href="assets/gallery/scev-zx-spectrum-128k.png"><img src="assets/gallery/scev-zx-spectrum-128k.png" width="160" alt="ZX Spectrum 128K editor menu"></a>
+  <a href="assets/gallery/scev-chip-8-octojam.png"><img src="assets/gallery/scev-chip-8-octojam.png" width="160" alt="CHIP-8 Octojam title"></a>
+</p>
+
+<sub>↑ Six-dollar emulator stack on top of this HAL: GBA (gdkGBA),
+Game Boy (binjgb), ZX Spectrum 48K/128K, CHIP-8. Captured from real
+runs of the firmwares listed under [Real-world consumers](#real-world-consumers).</sub>
+
 The base HAL is ~2K lines of C exposing every device RVVM emulates.
 Optional layers add picolibc, FatFs, and lwIP; each is opt-in via a
 build flag and contributes zero bytes to firmwares that don't use it
@@ -32,7 +44,7 @@ is a single `src/plat_<name>.c` file — see `include/plat.h`.
 | `time`   | `rdtime` CSR + CLINT mtimecmp idle-wait via `wfi` | `src/devices/riscv-aclint.c` |
 | `rtc`    | Google Goldfish RTC — `rtc_now_seconds()`, wallclock | `src/devices/rtc-goldfish.c` |
 | `atomic` | RV-A wrappers (`amoadd`/`lr`/`sc` typed inlines), `mutex_t` spinlock | — |
-| `bochs`/`gfx`/`gfx_text` | Cross-host framebuffer — Bochs Display, simple-framebuffer, or QEMU virtio-gpu auto-select. `gfx_rect`/`gfx_fill` auto-flush; consumers writing through the raw pointer call `gfx_present_all()` per frame | `src/devices/bochs-display.c` |
+| `bochs`/`gfx`/`gfx_text` | Cross-host framebuffer — Bochs Display, simple-framebuffer, or QEMU virtio-gpu auto-select. `gfx_rect`/`gfx_fill` auto-flush; consumers writing through the raw pointer call `gfx_present_all()` per frame. Opt-in **page-flipped double buffer** on Bochs (`gfx_enable_double_buffer` + `gfx_flip`) — VIRT_HEIGHT-doubling trick gives whole-frame presentation in one register write, eliminates mid-blit tearing on cart-driven cores. `tools/bdf2c/` ships a BDF→C converter; `include/fonts/cozette_8x13.h` is the pre-generated Cozette ASCII subset | `src/devices/bochs-display.c` |
 | `i2c`    | OpenCores I²C master — write / write-then-read, polling | `src/devices/i2c-oc.c` |
 | `hid`    | Cross-host keyboard — same `hid_kb_init_fdt`/`hid_kb_poll` API. Auto-binds to RVVM's HID-over-I²C or QEMU's virtio-input. Both backends emit USB HID usage codes. | `src/devices/i2c-hid.c` (RVVM) |
 | `nvme`   | NVMe-over-PCIe block device, chained PRP, large transfers | `src/devices/nvme.c` |
@@ -246,6 +258,7 @@ RVVM-vs-QEMU comparison and captured snapshots.
 | [`examples/eth-hello/`](examples/eth-hello/) | RTL8169 raw L2: ARP request → reply, decode |
 | [`examples/net-hello/`](examples/net-hello/) | full TCP/IP — DHCP client gets an IP, UDP echo server on port 7 |
 | [`examples/ui-hello/`](examples/ui-hello/) | menu primitives — top-level menu, file picker, yes/no dialog, message banner |
+| [`examples/cozette-hello/`](examples/cozette-hello/) | Cozette 6×13 bitmap font (ASCII) rendered through `gfx_text_t` — drives `tools/bdf2c/` to regenerate `include/fonts/cozette_8x13.h` from the vendored BDF |
 | [`examples/probe-s/`](examples/probe-s/) | **S-mode under OpenSBI** — same drivers, `csrr sstatus` smoke test, Sstc-vs-ecall timer comparison |
 | [`examples/bench/`](examples/bench/) | microbenchmarks — memcpy/memset/memmove × 1 MiB, gfx_rect 1024×256, self-IPI trap entry |
 
@@ -346,14 +359,14 @@ panic dumper otherwise needs `decode-panic` to resolve.
 
 ## Real-world consumers
 
-| consumer | uses |
-|---|---|
-| [**scev-chip-8**](https://github.com/SolAstrius/scev-chip-8) | bare HAL — UART, gfx, HID, NVMe |
-| [**scev-cores/apple-1**](https://github.com/SolAstrius/scev-cores) | + picolibc-min |
-| [**scev-cores/zx-spectrum**](https://github.com/SolAstrius/scev-cores) | bare HAL + custom snapshot loader |
-| [**scev-cores/game-boy**](https://github.com/SolAstrius/scev-cores) | + picolibc-min, vendored binjgb |
-| [**scev-cores/game-boy-advance**](https://github.com/SolAstrius/scev-cores) | + picolibc-min, vendored gdkGBA |
-| [**scev-cores/basic**](https://github.com/SolAstrius/scev-cores) | bare HAL + custom shim, vendored bwbasic 3.20 |
+| consumer | uses | shot |
+|---|---|---|
+| [**scev-chip-8**](https://github.com/SolAstrius/scev-chip-8) | bare HAL — UART, gfx, HID, NVMe | [![chip-8 octojam](assets/gallery/scev-chip-8-octojam.png)](assets/gallery/scev-chip-8-octojam.png) |
+| [**scev-zx-spectrum**](https://github.com/SolAstrius/scev-zx-spectrum) | bare HAL + custom snapshot loader, audio_edge beeper | [![ZX Spectrum 128K](assets/gallery/scev-zx-spectrum-128k.png)](assets/gallery/scev-zx-spectrum-128k.png) |
+| [**scev-gameboy**](https://github.com/SolAstrius/scev-gameboy) | + picolibc-min, vendored binjgb, audio_pcm stereo | [![Zelda OoA title](assets/gallery/scev-gameboy-zelda-ooa-title.png)](assets/gallery/scev-gameboy-zelda-ooa-title.png) |
+| [**scev-gba**](https://github.com/SolAstrius/scev-gba) | + picolibc-min, vendored gdkGBA, 76 MiB BSS | [![FireRed title](assets/gallery/scev-gba-firered.png)](assets/gallery/scev-gba-firered.png) |
+| [**scev-cores/apple-1**](https://github.com/SolAstrius/scev-cores/tree/master/apple-1) | + picolibc-min, gfx_text terminal | — (UART/text) |
+| [**scev-cores/basic**](https://github.com/SolAstrius/scev-cores/tree/master/basic) | bare HAL + custom shim, vendored bwbasic 3.20 | — (UART REPL) |
 
 Each pins this repo via submodule. Working references for every
 opt-in flag combination.
