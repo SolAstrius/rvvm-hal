@@ -1,0 +1,21 @@
+[build]
+target = "riscv64gc-unknown-none-elf"
+
+# rust-lld is the default linker for riscv64gc-unknown-none-elf and
+# understands the HAL's link.ld unmodified. We invoke it directly (not
+# through a gcc/clang frontend), so the args here are pure ld flags —
+# no -nostartfiles needed since rust-lld doesn't add crt*.o on no_std
+# targets to begin with.
+#
+# -T link.ld: HAL's linker script. Place at 0x80000000, reserves 8x16
+#   KiB stacks, exposes __bss_{start,end} / __stack_top.
+# --gc-sections: drop unused HAL surface (mirrors the C examples).
+# code-model=medium: medany — required for an ELF loaded at 0x80000000
+#   that addresses everything via PC-relative + 32-bit signed offsets.
+[target.riscv64gc-unknown-none-elf]
+rustflags = [
+    "-C", "link-arg=-T../../link.ld",
+    "-C", "link-arg=--gc-sections",
+    "-C", "relocation-model=static",
+    "-C", "code-model=medium",
+]

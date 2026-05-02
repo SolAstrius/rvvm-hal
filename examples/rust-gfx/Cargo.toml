@@ -1,0 +1,25 @@
+[package]
+name = "rust-gfx"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "firmware"
+path = "src/main.rs"
+
+[dependencies]
+# embedded-graphics: no_std/no_alloc 2D graphics — primitives, text,
+# DrawTarget abstraction. We implement DrawTarget over the HAL's
+# framebuffer so its whole drawing surface (shapes, fonts, transforms)
+# applies directly.
+embedded-graphics = "0.8"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = false
+
+[profile.dev]
+panic = "abort"
