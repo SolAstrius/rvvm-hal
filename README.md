@@ -7,17 +7,12 @@ with no kernel, who want to ship anything from a 7 KB hello-world
 to a full unikernel (libc + filesystem + TCP/IP + SMP) without
 rolling each piece by hand.
 
-<p align="center">
-  <a href="assets/gallery/scev-gba-firered.png"><img src="assets/gallery/scev-gba-firered.png" width="240" alt="Pokemon FireRed title screen"></a>
-  <a href="assets/gallery/scev-gameboy-zelda-ooa-intro.png"><img src="assets/gallery/scev-gameboy-zelda-ooa-intro.png" width="160" alt="Zelda Oracle of Ages — Link on Epona"></a>
-  <a href="assets/gallery/scev-gameboy-zelda-ooa-title.png"><img src="assets/gallery/scev-gameboy-zelda-ooa-title.png" width="160" alt="Zelda Oracle of Ages title"></a>
-  <a href="assets/gallery/scev-zx-spectrum-128k.png"><img src="assets/gallery/scev-zx-spectrum-128k.png" width="160" alt="ZX Spectrum 128K editor menu"></a>
-  <a href="assets/gallery/scev-chip-8-octojam.png"><img src="assets/gallery/scev-chip-8-octojam.png" width="160" alt="CHIP-8 Octojam title"></a>
-</p>
+[![rvvm-hal consumer gallery — FireRed, Zelda OoA, ZX Spectrum 128K, CHIP-8](assets/gallery/banner.png)](assets/gallery/)
 
-<sub>↑ Six-dollar emulator stack on top of this HAL: GBA (gdkGBA),
-Game Boy (binjgb), ZX Spectrum 48K/128K, CHIP-8. Captured from real
-runs of the firmwares listed under [Real-world consumers](#real-world-consumers).</sub>
+<sub>↑ Five emulator firmwares on top of this HAL — GBA (gdkGBA),
+Game Boy with CGB (binjgb), ZX Spectrum 48K/128K, CHIP-8. All real
+captures, taken against the post-double-buffer build of the firmwares
+listed under [Real-world consumers](#real-world-consumers) below.</sub>
 
 The base HAL is ~2K lines of C exposing every device RVVM emulates.
 Optional layers add picolibc, FatFs, and lwIP; each is opt-in via a
