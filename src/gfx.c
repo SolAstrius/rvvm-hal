@@ -3,7 +3,14 @@
 #include "fdt.h"
 #include "uart.h"
 #include "rvvm.h"
+#include "virtio_gpu.h"
 #include <stddef.h>
+
+/* Singleton virtio-gpu instance used when gfx_init_fdt picks that
+ * backend. Kept in gfx.c so consumers don't have to know about
+ * virtio_gpu_t at all — gfx_t stores no per-backend state. */
+static virtio_gpu_t gfx_vgpu;
+static bool         gfx_vgpu_active;
 
 /* memset / memcpy live in string_asm.S (or string.c if HAL_NO_ASM_STRING).
  * Either way they're freestanding-safe; we don't pull <string.h>. */
@@ -104,11 +111,30 @@ bool gfx_init(gfx_t *g, uint32_t want_w, uint32_t want_h) {
     return false;
 }
 
+/* virtio-gpu path. The framebuffer pixels live inside the singleton
+ * virtio_gpu_t (vram[]); we point gfx_t at that buffer and rely on
+ * gfx_rect/gfx_fill (or explicit gfx_present_all) to issue the
+ * transfer+flush sequence. */
+static bool gfx_virtio_gpu_init(gfx_t *g, const fdt_t *fdt,
+                                uint32_t w, uint32_t h) {
+    if (!virtio_gpu_init_fdt(&gfx_vgpu, fdt, w, h)) return false;
+    g->vram      = (uint32_t *)gfx_vgpu.vram;
+    g->width     = gfx_vgpu.width;
+    g->height    = gfx_vgpu.height;
+    g->stride_px = gfx_vgpu.width;       /* tightly packed */
+    g->backend   = GFX_BACKEND_VIRTIO_GPU;
+    g->format    = GFX_FMT_XRGB8888;
+    gfx_vgpu_active = true;
+    return true;
+}
+
 bool gfx_init_fdt(gfx_t *g, const fdt_t *fdt, uint32_t want_w, uint32_t want_h) {
     g->backend = GFX_BACKEND_NONE;
-    if (gfx_bochs_init(g, want_w, want_h)) return true;
-    if (gfx_simplefb_from_fdt(g, fdt))     return true;
-    uart_puts("gfx: no graphics surface found (try -bochs_display or -res WxH)\n");
+    if (gfx_bochs_init(g, want_w, want_h))            return true;
+    if (gfx_simplefb_from_fdt(g, fdt))                return true;
+    if (gfx_virtio_gpu_init(g, fdt, want_w, want_h))  return true;
+    uart_puts("gfx: no graphics surface found "
+              "(try -bochs_display, -res WxH, or QEMU -device virtio-gpu-device)\n");
     return false;
 }
 
@@ -153,6 +179,12 @@ static inline void gfx_fill_row(uint32_t *p, uint32_t w, uint32_t pix) {
     if (w & 1) ((uint32_t *)(p64 + pairs))[0] = pix;
 }
 
+void gfx_present(const gfx_t *g, uint32_t x, uint32_t y,
+                 uint32_t w, uint32_t h) {
+    if (g->backend != GFX_BACKEND_VIRTIO_GPU || !gfx_vgpu_active) return;
+    virtio_gpu_present(&gfx_vgpu, x, y, w, h);
+}
+
 void gfx_fill(const gfx_t *g, uint32_t color) {
     if (g->backend == GFX_BACKEND_NONE) return;
     uint32_t pix = color;
@@ -168,17 +200,15 @@ void gfx_fill(const gfx_t *g, uint32_t color) {
      * whole surface. */
     if (g->stride_px == g->width) {
         gfx_fill_row(g->vram, g->width * g->height, pix);
-        return;
+    } else {
+        /* Per-row path (simplefb with stride > width padding). */
+        uint32_t *p = g->vram;
+        for (uint32_t y = 0; y < g->height; y++) {
+            gfx_fill_row(p, g->width, pix);
+            p += g->stride_px;
+        }
     }
-
-    /* Per-row path (simplefb with stride > width padding). Pointer
-     * strength-reduced — increment by stride_px each iter instead of
-     * recomputing y * stride_px from scratch. */
-    uint32_t *p = g->vram;
-    for (uint32_t y = 0; y < g->height; y++) {
-        gfx_fill_row(p, g->width, pix);
-        p += g->stride_px;
-    }
+    gfx_present(g, 0, 0, g->width, g->height);
 }
 
 void gfx_rect(const gfx_t *g, uint32_t x, uint32_t y,
@@ -201,4 +231,5 @@ void gfx_rect(const gfx_t *g, uint32_t x, uint32_t y,
         gfx_fill_row(p, w, pix);
         p += g->stride_px;
     }
+    gfx_present(g, x, y, w, h);
 }

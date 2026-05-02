@@ -28,11 +28,20 @@ CFLAGS   := -ffreestanding -fno-stack-protector -fno-pie \
 #                 byte-fallback path.
 #   zicboz        cbo.zero — 64-byte cache-block zero in one insn;
 #                 useful if/when memset gets a Zicboz fast path.
-#   zcb           Compressed bitmanip + load/store — smaller code.
+#
+# Opt-in extensions (add via `make HAL_MARCH_EXTS_EXTRA="zcb …"`):
+#   zcb           Compressed byte/halfword load/store + zext/sext/mul/not
+#                 in 16-bit encodings. Noticeable size win for MMIO-heavy
+#                 drivers (UART, CLINT, PLIC byte/halfword pokes), but
+#                 not in QEMU's default `rv64` cpu — keeping it off by
+#                 default lets the same firmware.elf boot on QEMU virt
+#                 without `-cpu` flags. RVVM enables it unconditionally,
+#                 so opting in costs nothing on RVVM.
 #
 # zig cc routes -march= to -target-cpu, so we use clang's
 # -target-feature mechanism via -Xclang to add each extension.
-HAL_MARCH_EXTS ?= zba zbb zbs zicond zicclsm zicboz zcb
+HAL_MARCH_EXTS ?= zba zbb zbs zicond zicclsm zicboz
+HAL_MARCH_EXTS += $(HAL_MARCH_EXTS_EXTRA)
 CFLAGS   += $(foreach ext,$(HAL_MARCH_EXTS),-Xclang -target-feature -Xclang +$(ext))
 
 # Privilege mode + platform backend.
@@ -420,5 +429,47 @@ run-probe:
 run-smp:
 	$(MAKE) -C examples/smp run
 
+# ---------------------------------------------------------------------
+# QEMU virt convenience targets.
+#
+# rvvm-hal is FDT-driven, and QEMU's `virt` machine happens to share
+# every magic address we care about with RVVM's default machine
+# (NS16550A at 0x10000000, CLINT at 0x02000000, PLIC at 0x0c000000,
+# PCI ECAM at 0x30000000, syscon at 0x00100000, goldfish-rtc at
+# 0x00101000). The same firmware binary runs on both — only the host
+# launcher differs.
+#
+# QEMU_CPU enables the same RISC-V extensions libhal.a is compiled
+# with (HAL_MARCH_EXTS). `-cpu max` would also work; we list explicit
+# knobs so an extension we accidentally lean on without listing it in
+# HAL_MARCH_EXTS shows up as a clean illegal-instruction trap rather
+# than being silently available. zicclsm isn't a CPU knob in QEMU
+# (misaligned access is on by default for `virt`), so it's omitted.
+# Add `zcb=true` here if you also pass HAL_MARCH_EXTS_EXTRA=zcb.
+QEMU       ?= qemu-system-riscv64
+QEMU_CPU   ?= rv64,zba=true,zbb=true,zbs=true,zicond=true,zicboz=true
+# `force-legacy=false`: by default QEMU's virtio-mmio bus presents
+# devices as legacy virtio (Version=1), which our driver doesn't
+# implement. Forcing modern (Version=2) on every slot lets the same
+# binary use any -device virtio-*-device the user attaches.
+QEMU_FLAGS ?= -M virt -nographic -cpu $(QEMU_CPU) \
+              -global virtio-mmio.force-legacy=false
+
+run-qemu-probe:
+	$(MAKE) -C examples/probe firmware.elf
+	$(QEMU) $(QEMU_FLAGS) -bios none -kernel examples/probe/firmware.elf
+
+run-qemu-probe-s:
+	$(MAKE) -C examples/probe-s firmware.elf
+	$(QEMU) $(QEMU_FLAGS) -bios default -kernel examples/probe-s/firmware.elf
+
+# Deterministic bench: QEMU `-icount` retires one mtime tick per
+# instruction, so wall-clock noise drops out and runs are bit-identical.
+# Real performance still requires real hardware, but this is the right
+# tool for code-gen A/B testing (Zcb-vs-no-Zcb, asm-vs-C string ops…).
+run-qemu-bench:
+	$(MAKE) -C examples/bench run-qemu-icount
+
 .PHONY: all clean run-audio-beep run-audio-edge run-audio-pcm run-probe run-smp \
+        run-qemu-probe run-qemu-probe-s run-qemu-bench \
         picolibc-min picolibc-std picolibc-clean

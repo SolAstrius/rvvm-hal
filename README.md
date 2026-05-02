@@ -32,14 +32,24 @@ is a single `src/plat_<name>.c` file — see `include/plat.h`.
 | `time`   | `rdtime` CSR + CLINT mtimecmp idle-wait via `wfi` | `src/devices/riscv-aclint.c` |
 | `rtc`    | Google Goldfish RTC — `rtc_now_seconds()`, wallclock | `src/devices/rtc-goldfish.c` |
 | `atomic` | RV-A wrappers (`amoadd`/`lr`/`sc` typed inlines), `mutex_t` spinlock | — |
-| `bochs`/`gfx`/`gfx_text` | Bochs Display + simple-framebuffer auto-select, char-grid renderer | `src/devices/bochs-display.c` |
+| `bochs`/`gfx`/`gfx_text` | Cross-host framebuffer — Bochs Display, simple-framebuffer, or QEMU virtio-gpu auto-select. `gfx_rect`/`gfx_fill` auto-flush; consumers writing through the raw pointer call `gfx_present_all()` per frame | `src/devices/bochs-display.c` |
 | `i2c`    | OpenCores I²C master — write / write-then-read, polling | `src/devices/i2c-oc.c` |
-| `hid`    | HID-over-I²C boot keyboard, key-diff event emit | `src/devices/i2c-hid.c` |
+| `hid`    | Cross-host keyboard — same `hid_kb_init_fdt`/`hid_kb_poll` API. Auto-binds to RVVM's HID-over-I²C or QEMU's virtio-input. Both backends emit USB HID usage codes. | `src/devices/i2c-hid.c` (RVVM) |
 | `nvme`   | NVMe-over-PCIe block device, chained PRP, large transfers | `src/devices/nvme.c` |
 | `audio`/`hda` | Intel HDA controller — beep widget + raw 16-bit PCM streaming, ALSA-period-aligned BDL | `src/devices/sound-hda.c` |
 | `eth`    | Realtek RTL8169 — descriptor-mode RX/TX, raw L2 frames | `src/devices/rtl8169.c` |
 | `ui`     | menu / confirm / message / file-picker primitives, dual UART + GFX backend | — |
 | `mmio`/`string` | volatile MMIO accessors, word-aligned mem*` helpers | — |
+
+QEMU-only devices (driver auto-disables on RVVM via FDT compat miss):
+
+| device | provides | host availability |
+|---|---|---|
+| `fw_cfg` | QEMU fw-cfg byte-stream — selector + data port, file directory walk | QEMU virt only (`qemu,fw-cfg-mmio`) |
+| `cfi`    | CFI parallel-NOR flash — JEDEC query, size + cmdset, MMIO read | QEMU virt + most real virt-style boards (`cfi-flash`) |
+| `virtio` | Modern virtio-mmio transport (v2): probe, feature negotiation, split-virtqueue, push/pop/notify | QEMU virt and most virt-style boards (`virtio,mmio`) |
+| `virtio_input` | virtio-input device — drains eventq, translates Linux keycodes → USB HID usages. Used by `hid` automatically when no I²C-HID is present. | QEMU virt with `-device virtio-keyboard-device` etc |
+| `virtio_gpu`   | virtio-gpu (2D) device — display info, resource_create_2d, attach_backing, set_scanout, transfer + flush. Used by `gfx` automatically when no Bochs / simplefb is present. | QEMU virt with `-device virtio-gpu-device` |
 
 Plus `rvvm.h` — the topology header. Documents every magic address,
 PCI device ID, and register offset RVVM uses, with cross-refs back
@@ -87,7 +97,8 @@ run as `rvvm <opensbi-fw_jump.bin> -k firmware.bin`. See
 |---|---|---|
 | `HAL_OPT` | `s` (size-leaning) | `-O$(HAL_OPT)`. `HAL_OPT=2` for speed-leaning. |
 | `HAL_LTO` | `` (off) | `HAL_LTO=1` enables full LTO. Requires LLVM-aware linker (`zig cc` / `lld` / `clang`). With LTO, consumer firmware.bin shrinks ~40-50% (the linker drops unused HAL surface across TUs) and `irq-entry` paths get inlined. The bench / probe / probe-s examples default to `HAL_LTO=1`. |
-| `HAL_MARCH_EXTS` | `zba zbb zbs zicond zicclsm zicboz zcb` | RISC-V extensions to enable beyond `rv64gc`. Defaults match what RVVM advertises in misa + `riscv,isa-extensions`. Compiler emits `czero.eqz/nez`, `sh*add`, `sext.b/h`, etc. |
+| `HAL_MARCH_EXTS` | `zba zbb zbs zicond zicclsm zicboz` | RISC-V extensions to enable beyond `rv64gc`. Defaults match the intersection of RVVM's `riscv_exts` and QEMU virt's default `rv64` cpu, so the same firmware boots on either. Compiler emits `czero.eqz/nez`, `sh*add`, `sext.b/h`, etc. |
+| `HAL_MARCH_EXTS_EXTRA` | (empty) | Additional extensions appended to `HAL_MARCH_EXTS`. Use this to opt into ones outside QEMU's default `rv64` set — most usefully `zcb` for compressed byte/halfword load/store, a small code-size win in MMIO-heavy paths (~150 B off a typical firmware.bin). RVVM enables Zcb unconditionally; QEMU needs `-cpu rv64,zcb=true`. |
 | `HAL_NO_ASM_STRING` | `` (off) | `HAL_NO_ASM_STRING=1` falls back to the C `string.c`. The default asm versions in `string_asm.S` are 2-4× faster on memcpy/memmove. |
 | `HAL_NO_SSTC` | `` (off) | A/B knob for the S+SBI build. `HAL_NO_SSTC=1` forces the `sbi_set_timer` ecall path even when Sstc is advertised. |
 
@@ -171,6 +182,55 @@ rvvm firmware.bin -smp 4
 # Networking (default; -nonet to disable)
 rvvm firmware.bin -portfwd udp/2007=7   # forward host:2007 → guest:7
 ```
+
+## Run on QEMU
+
+The HAL is FDT-driven: every MMIO base, IRQ source, and timer rate is
+discovered from the device tree at boot. QEMU's `virt` machine happens
+to share every magic address RVVM's default machine uses (NS16550A at
+`0x10000000`, CLINT at `0x02000000`, PLIC at `0x0c000000`, PCI ECAM at
+`0x30000000`, syscon at `0x00100000`, goldfish-rtc at `0x00101000`),
+so **the same `firmware.elf` runs unchanged on both** — only the host
+launcher differs.
+
+```sh
+# S-mode build (HAL_PRIV=s HAL_PLAT=s_sbi) under OpenSBI:
+make -C examples/probe-s run        # → RVVM
+make -C examples/probe-s run-qemu   # → QEMU virt + bundled OpenSBI
+
+# M-mode build, bare-metal:
+make -C examples/probe run-headless # → RVVM
+make -C examples/probe run-qemu     # → QEMU virt, -bios none
+
+# Or from the HAL root:
+make run-qemu-probe-s
+make run-qemu-probe
+```
+
+Top-level Makefile defines `QEMU_CPU` matching the default
+`HAL_MARCH_EXTS` set (Zba/Zbb/Zbs/Zicond/Zicboz). All of these are
+in QEMU's default `rv64` cpu too, but we list them explicitly so a
+custom `-cpu` on the QEMU side doesn't accidentally drop one. If you
+opt into `HAL_MARCH_EXTS_EXTRA=zcb` for the size win on RVVM, append
+`zcb=true` to `QEMU_CPU` to keep QEMU compatible.
+
+What works on QEMU virt with the same binary:
+- Boot, traps, panic dumper, BSS zero, per-hart stacks, FP context
+- UART (NS16550A), CLINT, PLIC, syscon poweroff
+- Time subsystem (mtime via CLINT, or Sstc direct-CSR under SBI)
+- SMP (CLINT MSI in M-mode, SBI HSM in S-mode)
+- SBI ecalls — `sbi_set_timer`, IPI, HSM, SRST
+
+What's RVVM-only and won't activate on QEMU (the FDT compatible
+strings don't match, so the drivers never engage):
+- Bochs Display, opencores-i2c, i2c-HID, C-Media HDA, ATA, RTL8169
+- NVMe (QEMU has it but with a different vendor/device ID path)
+- Anything in `examples/{audio-*,fs-hello,eth-hello,net-hello,ui-hello}`
+
+`examples/probe-s` is the cross-host smoke test: same binary, boots
+under either, exits cleanly via SBI SRST. It also dumps the entire
+FDT — see [`docs/devicetree.md`](docs/devicetree.md) for a side-by-side
+RVVM-vs-QEMU comparison and captured snapshots.
 
 ## Examples
 

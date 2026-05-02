@@ -63,9 +63,45 @@ firmware.bin: firmware.elf
 	@printf '\nBuilt %s (%s bytes)\n' "$@" "$$(stat -c %s $@)"
 
 run: firmware.bin
-	$(RVVM) $(OPENSBI) -k firmware.bin -nogui -nonet -nosound
+	$(RVVM) $(OPENSBI) -k firmware.bin -res 640x400 -nogui -nonet -nosound
+
+# Windowed variant — drops `-nogui` so RVVM creates a GUI window and
+# attaches the Bochs Display PCI device to it (RVVM gates
+# `-bochs_display` behind `!nogui && !res`). Useful to actually see
+# the gfx test pattern through the Bochs path. Close the window to
+# exit; Ctrl-A x in the controlling terminal also works.
+run-gui: firmware.bin
+	$(RVVM) $(OPENSBI) -k firmware.bin -bochs_display -nonet -nosound
+
+# QEMU virt boots OpenSBI as M-mode firmware (-bios default) and our
+# ELF as the S-mode payload. Same binary that RVVM runs — QEMU's virt
+# machine shares the magic addresses we discover via FDT. QEMU_CPU
+# enables the extensions libhal.a was built with. If you opted into
+# Zcb via HAL_MARCH_EXTS_EXTRA=zcb, add `zcb=true` here too.
+QEMU     ?= qemu-system-riscv64
+QEMU_CPU ?= rv64,zba=true,zbb=true,zbs=true,zicond=true,zicboz=true
+QEMU_VIO ?= -global virtio-mmio.force-legacy=false
+
+run-qemu: firmware.elf
+	$(QEMU) -M virt -nographic -cpu $(QEMU_CPU) $(QEMU_VIO) \
+	        -bios default -kernel firmware.elf
+
+# Variant that attaches a virtio keyboard for testing the virtio-input
+# backend in hid.c. Inject keys via QEMU monitor (Ctrl-A c, then
+# `sendkey a`, etc).
+run-qemu-kbd: firmware.elf
+	$(QEMU) -M virt -nographic -cpu $(QEMU_CPU) $(QEMU_VIO) \
+	        -device virtio-keyboard-device \
+	        -bios default -kernel firmware.elf
+
+# Variant that attaches a virtio GPU. -display gtk so the framebuffer
+# is visible; close the window to exit.
+run-qemu-gpu: firmware.elf
+	$(QEMU) -M virt -cpu $(QEMU_CPU) $(QEMU_VIO) \
+	        -device virtio-gpu-device -display gtk \
+	        -bios default -kernel firmware.elf
 
 clean:
 	rm -rf build firmware.elf firmware.bin
 
-.PHONY: all run clean
+.PHONY: all run run-qemu clean

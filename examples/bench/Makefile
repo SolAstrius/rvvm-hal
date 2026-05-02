@@ -45,7 +45,20 @@ firmware.bin: firmware.elf
 run: firmware.bin
 	$(RVVM) firmware.bin -nogui -nonet -nosound
 
+# QEMU under -icount makes mtime tick once per executed instruction
+# rather than once per host nanosecond. Numbers become bit-reproducible
+# across runs, and Zcb-vs-no-Zcb-style A/B comparisons stop being
+# noise-dominated. RVVM's mtime is wall-clock-aligned, so the same
+# bench there spans ~40% spread run-to-run.
+QEMU      ?= qemu-system-riscv64
+QEMU_CPU  ?= rv64,zba=true,zbb=true,zbs=true,zicond=true,zicboz=true
+ICOUNT    ?= shift=0,sleep=off
+
+run-qemu-icount: firmware.elf
+	$(QEMU) -M virt -nographic -bios none -cpu $(QEMU_CPU) \
+	        -icount $(ICOUNT) -kernel firmware.elf
+
 clean:
 	rm -rf build firmware.elf firmware.bin
 
-.PHONY: all run clean
+.PHONY: all run run-qemu-icount clean

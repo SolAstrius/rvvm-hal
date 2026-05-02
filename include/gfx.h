@@ -29,9 +29,10 @@
 #include "fdt.h"
 
 typedef enum {
-    GFX_BACKEND_NONE     = 0,
-    GFX_BACKEND_BOCHS    = 1,
-    GFX_BACKEND_SIMPLEFB = 2,
+    GFX_BACKEND_NONE       = 0,
+    GFX_BACKEND_BOCHS      = 1,
+    GFX_BACKEND_SIMPLEFB   = 2,
+    GFX_BACKEND_VIRTIO_GPU = 3,
 } gfx_backend_t;
 
 typedef enum {
@@ -83,3 +84,19 @@ static inline void gfx_pixel(const gfx_t *g, uint32_t x, uint32_t y, uint32_t co
 /* Fill an axis-aligned rectangle. Bounds-clamped against (width, height). */
 void gfx_rect(const gfx_t *g, uint32_t x, uint32_t y,
               uint32_t w, uint32_t h, uint32_t color);
+
+/* Present a sub-rectangle to the host display.
+ *
+ * On Bochs and simple-framebuffer backends this is a no-op — those
+ * are direct-mapped, so writes to vram are already visible.
+ *
+ * On virtio-gpu it issues TRANSFER_TO_HOST_2D + RESOURCE_FLUSH for
+ * the rect. gfx_rect / gfx_fill auto-call this internally, so most
+ * callers don't need to touch it; consumers that write through the
+ * raw vram pointer themselves (chip-8, zx-spectrum) should call
+ * gfx_present_all(g) once per frame to push their changes. */
+void gfx_present(const gfx_t *g, uint32_t x, uint32_t y,
+                 uint32_t w, uint32_t h);
+static inline void gfx_present_all(const gfx_t *g) {
+    gfx_present(g, 0, 0, g->width, g->height);
+}

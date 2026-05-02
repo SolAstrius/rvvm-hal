@@ -1,0 +1,37 @@
+Full FDT walk:
+/  compat=riscv-virtio
+  reserved-memory
+    mmode_resv1@80000000 @0x0000000080000000 (size=0x0000000000040000)
+    mmode_resv0@80040000 @0x0000000080040000 (size=0x0000000000020000)
+  poweroff  compat=syscon-poweroff
+  reboot  compat=syscon-reboot
+  platform-bus@4000000  compat=qemu,platform
+  memory@80000000 @0x0000000080000000 (size=0x0000000008000000)
+  cpus
+    cpu@0  compat=riscv
+      interrupt-controller  compat=riscv,cpu-intc
+    cpu-map
+      cluster0
+        core0
+  pmu  compat=riscv,pmu
+  fw-cfg@10100000 @0x0000000010100000 (size=0x0000000000000018)  compat=qemu,fw-cfg-mmio
+  flash@20000000 @0x0000000020000000 (size=0x0000000002000000)  compat=cfi-flash
+  aliases
+  chosen
+  soc  compat=simple-bus
+    rtc@101000 @0x0000000000101000 (size=0x0000000000001000)  compat=google,goldfish-rtc
+    serial@10000000 @0x0000000010000000 (size=0x0000000000000100)  compat=ns16550a
+    test@100000 @0x0000000000100000 (size=0x0000000000001000)  compat=sifive,test1
+    virtio_mmio@10008000 @0x0000000010008000 (size=0x0000000000001000)  compat=virtio,mmio
+    virtio_mmio@10007000 @0x0000000010007000 (size=0x0000000000001000)  compat=virtio,mmio
+    virtio_mmio@10006000 @0x0000000010006000 (size=0x0000000000001000)  compat=virtio,mmio
+    virtio_mmio@10005000 @0x0000000010005000 (size=0x0000000000001000)  compat=virtio,mmio
+    virtio_mmio@10004000 @0x0000000010004000 (size=0x0000000000001000)  compat=virtio,mmio
+    virtio_mmio@10003000 @0x0000000010003000 (size=0x0000000000001000)  compat=virtio,mmio
+    virtio_mmio@10002000 @0x0000000010002000 (size=0x0000000000001000)  compat=virtio,mmio
+    virtio_mmio@10001000 @0x0000000010001000 (size=0x0000000000001000)  compat=virtio,mmio
+    plic@c000000 @0x000000000c000000 (size=0x0000000000600000)  compat=sifive,plic-1.0.0
+    clint@2000000 @0x0000000002000000 (size=0x0000000000010000)  compat=sifive,clint0
+    pci@30000000 @0x0000000030000000 (size=0x0000000010000000)  compat=pci-host-ecam-generic
+
+probe-s: clean shutdown via SBI SRST.

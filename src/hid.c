@@ -4,8 +4,7 @@
 #include "uart.h"
 #include <stddef.h>
 
-/* USB HID modifier-key usage codes (these aren't in rvvm.h yet but
- * they're the standard 0xE0-0xE7 range from the HID Usage Tables). */
+/* USB HID modifier-key usage codes (HID Usage Tables 0xE0-0xE7). */
 #define HID_KEY_LCTRL    0xE0
 #define HID_KEY_LSHIFT   0xE1
 #define HID_KEY_LALT     0xE2
@@ -15,36 +14,73 @@
 #define HID_KEY_RALT     0xE6
 #define HID_KEY_RMETA    0xE7
 
+/* The shared virtio-input backing for the auto-discovery path. We
+ * keep one in BSS so consumers don't have to plumb a virtio_input_t
+ * through their state. Multiple hid_keyboard_t's pointing at this
+ * one device are fine — virtio_input_poll() drains the same eventq. */
+static virtio_input_t hid_vi_singleton;
+
 void hid_kb_init(hid_keyboard_t *kb, uint8_t i2c_addr) {
-    kb->i2c_addr = i2c_addr;
-    for (int i = 0; i < 6; i++) kb->prev_keys[i] = 0;
-    kb->prev_mod = 0;
+    kb->backend     = HID_BACKEND_I2C;
     kb->initialised = true;
+    kb->i2c_addr    = i2c_addr;
+    kb->prev_mod    = 0;
+    for (int i = 0; i < 6; i++) kb->prev_keys[i] = 0;
+    kb->vi          = NULL;
 }
 
-/* Was usage code `u` in the array? */
+bool hid_kb_init_fdt(hid_keyboard_t *kb, const fdt_t *fdt) {
+    /* Try virtio-input first — on QEMU virt with -device
+     * virtio-keyboard-device this binds. On RVVM there are no
+     * virtio-mmio nodes so virtio_input_init_fdt returns false fast,
+     * and we fall through to the I²C path. */
+    if (virtio_input_init_fdt(&hid_vi_singleton, fdt)) {
+        kb->backend     = HID_BACKEND_VIRTIO;
+        kb->initialised = true;
+        kb->vi          = &hid_vi_singleton;
+        kb->i2c_addr    = 0;
+        kb->prev_mod    = 0;
+        for (int i = 0; i < 6; i++) kb->prev_keys[i] = 0;
+        return true;
+    }
+
+    /* I²C-HID fallback. Locate the opencores-i2c controller; if it's
+     * present we assume RVVM's standard layout (kb at 0x08). */
+    uint32_t i_off = fdt_find_compatible(fdt, "opencores,i2c-ocores");
+    if (i_off != UINT32_MAX) {
+        uint64_t at = 0, sz = 0;
+        if (fdt_node_reg64(fdt, i_off, 0, &at, &sz)) {
+            i2c_init((uintptr_t)at);
+        }
+        hid_kb_init(kb, RVVM_I2C_HID_KEYBOARD);
+        return true;
+    }
+
+    /* No backend available — leave kb in HID_BACKEND_NONE; poll() is
+     * a no-op so callers can still use the same struct safely. */
+    kb->backend     = HID_BACKEND_NONE;
+    kb->initialised = false;
+    return false;
+}
+
+/* ---- I²C-HID backend (was the entire file before). ---- */
+
 static bool in_array(const uint8_t *arr, int n, uint8_t u) {
     if (u == 0) return false;
     for (int i = 0; i < n; i++) if (arr[i] == u) return true;
     return false;
 }
 
-int hid_kb_poll(hid_keyboard_t *kb,
-                void (*cb)(uint8_t usage, bool pressed, void *ctx),
-                void *ctx) {
-    if (!kb->initialised) return 0;
-
-    /* Select INPUT_REG (0x0003 LE), then read 10 bytes. */
+static int hid_poll_i2c(hid_keyboard_t *kb,
+                        void (*cb)(uint8_t, bool, void *), void *ctx) {
     uint8_t reg_sel[2] = { I2C_HID_REG_INPUT & 0xFF,
                            (I2C_HID_REG_INPUT >> 8) & 0xFF };
     uint8_t buf[RVVM_HID_KB_REPORT_LEN] = {0};
 
-    if (!i2c_write_then_read(kb->i2c_addr, reg_sel, 2,
-                             buf, sizeof(buf))) {
-        /* Log NACK / timeout once so we don't spam the UART at 60 Hz. */
+    if (!i2c_write_then_read(kb->i2c_addr, reg_sel, 2, buf, sizeof(buf))) {
         static bool warned;
         if (!warned) {
-            uart_printf("hid: i2c xact to addr 0x%x failed (NACK/timeout)\n",
+            uart_printf("hid: i2c xact to addr 0x%x failed\n",
                         (uint64_t)kb->i2c_addr);
             warned = true;
         }
@@ -52,32 +88,13 @@ int hid_kb_poll(hid_keyboard_t *kb,
     }
 
     uint16_t len = buf[0] | ((uint16_t)buf[1] << 8);
-
-    /* Dump the first non-empty report so we can see whether the
-     * i2c-hid pipe works at all. After that, real key events are
-     * traced via the cb in main.c. */
-    static bool seen_one;
-    if (!seen_one && len != 0) {
-        /* uart's %x already adds the "0x" prefix; formats stay bare. */
-        uart_printf("hid: first non-empty report (len=%u): "
-                    "len=%x %x  mod=%x  res=%x  keys=%x %x %x %x %x %x\n",
-                    (uint64_t)len,
-                    (uint64_t)buf[0], (uint64_t)buf[1],
-                    (uint64_t)buf[2], (uint64_t)buf[3],
-                    (uint64_t)buf[4], (uint64_t)buf[5],
-                    (uint64_t)buf[6], (uint64_t)buf[7],
-                    (uint64_t)buf[8], (uint64_t)buf[9]);
-        seen_one = true;
-    }
-
     if (len == 0) return 0;
     if (len > sizeof(buf)) len = sizeof(buf);
 
     int events = 0;
     uint8_t mod  = buf[2];
-    const uint8_t *keys = &buf[4];   /* 6 entries */
+    const uint8_t *keys = &buf[4];
 
-    /* Diff modifier byte bit-by-bit, mapping each bit to its usage code. */
     static const uint8_t mod_usages[8] = {
         HID_KEY_LCTRL, HID_KEY_LSHIFT, HID_KEY_LALT, HID_KEY_LMETA,
         HID_KEY_RCTRL, HID_KEY_RSHIFT, HID_KEY_RALT, HID_KEY_RMETA,
@@ -89,28 +106,29 @@ int hid_kb_poll(hid_keyboard_t *kb,
             events++;
         }
     }
-
-    /* Releases: keys in prev that are no longer in current. */
     for (int i = 0; i < 6; i++) {
         uint8_t u = kb->prev_keys[i];
-        if (u == 0) continue;
-        if (!in_array(keys, 6, u)) {
-            cb(u, false, ctx);
-            events++;
-        }
+        if (u && !in_array(keys, 6, u)) { cb(u, false, ctx); events++; }
     }
-    /* Presses: keys in current that weren't in prev. */
     for (int i = 0; i < 6; i++) {
         uint8_t u = keys[i];
-        if (u == 0) continue;
-        if (!in_array(kb->prev_keys, 6, u)) {
-            cb(u, true, ctx);
-            events++;
-        }
+        if (u && !in_array(kb->prev_keys, 6, u)) { cb(u, true, ctx); events++; }
     }
-
-    /* Snapshot for next diff. */
     kb->prev_mod = mod;
     for (int i = 0; i < 6; i++) kb->prev_keys[i] = keys[i];
     return events;
+}
+
+int hid_kb_poll(hid_keyboard_t *kb,
+                void (*cb)(uint8_t usage, bool pressed, void *ctx),
+                void *ctx) {
+    if (!kb->initialised) return 0;
+    switch (kb->backend) {
+    case HID_BACKEND_I2C:
+        return hid_poll_i2c(kb, cb, ctx);
+    case HID_BACKEND_VIRTIO:
+        return virtio_input_poll(kb->vi, cb, ctx);
+    default:
+        return 0;
+    }
 }

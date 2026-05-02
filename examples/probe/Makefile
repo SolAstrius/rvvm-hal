@@ -49,10 +49,27 @@ firmware.bin: firmware.elf
 run: firmware.bin
 	rvvm firmware.bin -bochs_display -nonet -nosound
 
+# Headless mode. RVVM gates `-bochs_display` behind `!nogui && !res`
+# (see RVVM src/main.c:469), so passing `-nogui -bochs_display` silently
+# skips Bochs creation and the firmware sees an empty PCI bus. We use
+# `-res WxH -nogui` instead — that drives RVVM's simple-framebuffer
+# init path which works without a GUI window. Same gfx surface from
+# the firmware's POV via the simplefb backend.
 run-headless: firmware.bin
-	rvvm firmware.bin -nogui -nonet -nosound
+	rvvm firmware.bin -res 640x400 -nogui -nonet -nosound
+
+# QEMU virt: bare-metal M-mode kernel boot (no OpenSBI). Same binary
+# RVVM runs — boots, FDT-walks, lists devices. The probe's later
+# stages exercise RVVM-only devices (Bochs, opencores-i2c, NVMe,
+# C-Media HDA, RTL8169, i2c-HID); on QEMU virt those paths just
+# silently no-op since the FDT compatible strings aren't present.
+QEMU     ?= qemu-system-riscv64
+QEMU_CPU ?= rv64,zba=true,zbb=true,zbs=true,zicond=true,zicboz=true
+
+run-qemu: firmware.elf
+	$(QEMU) -M virt -nographic -cpu $(QEMU_CPU) -bios none -kernel firmware.elf
 
 clean:
 	rm -rf build firmware.elf firmware.bin
 
-.PHONY: all run run-headless clean
+.PHONY: all run run-headless run-qemu clean
