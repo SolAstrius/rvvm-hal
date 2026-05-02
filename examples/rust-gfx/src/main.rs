@@ -52,6 +52,8 @@ unsafe extern "C" {
     fn fdt_init(fdt: *mut Fdt, blob: *const u8) -> bool;
     fn gfx_init_fdt(g: *mut Gfx, fdt: *const Fdt, want_w: u32, want_h: u32) -> bool;
     fn gfx_present(g: *const Gfx, x: u32, y: u32, w: u32, h: u32);
+    fn gfx_enable_double_buffer(g: *mut Gfx) -> bool;
+    fn gfx_flip(g: *mut Gfx);
 
     fn time_hz() -> u64;
     fn time_ticks_per_frame() -> u64;
@@ -361,6 +363,17 @@ pub unsafe extern "C" fn kmain(_hartid: u64, fdt_addr: u64) -> ! {
             g.format,
         );
 
+        // Opt in to page-flipped double buffering. On Bochs the HAL
+        // doubles VIRT_HEIGHT and we draw into the off-screen half;
+        // gfx_flip() swaps the visible region in one register write,
+        // so the host display sees whole frames only — no mid-blit
+        // tearing even on a slow render path.
+        let db_enabled = gfx_enable_double_buffer(&mut g);
+        uart_printf(
+            c"rust-gfx: double-buffer = %s\n".as_ptr(),
+            if db_enabled { c"ON".as_ptr() } else { c"OFF (backend unsupported)".as_ptr() },
+        );
+
         let mut fb = Framebuffer::new(&g);
 
         let frame_ticks = time_ticks_per_frame();
@@ -372,7 +385,15 @@ pub unsafe extern "C" fn kmain(_hartid: u64, fdt_addr: u64) -> ! {
         let mut frame: u32 = 0;
         while time_now() < deadline_end {
             draw_scene(&mut fb, frame);
-            gfx_present_all(&g);
+            if db_enabled {
+                // gfx_flip swaps which VRAM half the host displays AND
+                // updates g.vram to the new back buffer — re-thread
+                // it into Framebuffer so the next frame draws there.
+                gfx_flip(&mut g);
+                fb = Framebuffer::new(&g);
+            } else {
+                gfx_present_all(&g);
+            }
             frame = frame.wrapping_add(1);
             next_frame += frame_ticks;
             time_busy_until(next_frame);

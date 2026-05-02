@@ -12,6 +12,12 @@
 static virtio_gpu_t gfx_vgpu;
 static bool         gfx_vgpu_active;
 
+/* Singleton Bochs instance (also used by gfx_enable_double_buffer /
+ * gfx_flip — they need the persistent bochs_t with VRAM base and
+ * page-flip state, which gfx_t doesn't carry). */
+static bochs_t      gfx_bd;
+static bool         gfx_bd_active;
+
 /* memset / memcpy live in string_asm.S (or string.c if HAL_NO_ASM_STRING).
  * Either way they're freestanding-safe; we don't pull <string.h>. */
 extern void *memset(void *dst, int c, size_t n);
@@ -86,15 +92,15 @@ static bool gfx_bochs_init(gfx_t *g, uint32_t w, uint32_t h) {
 
     /* Bochs is present — defer to the existing driver. If mode-set fails
      * past this point, that's a real error and bochs_init will log. */
-    static bochs_t bd;
-    if (!bochs_init(&bd, w, h)) return false;
+    if (!bochs_init(&gfx_bd, w, h)) return false;
 
-    g->vram      = bd.vram;
-    g->width     = bd.width;
-    g->height    = bd.height;
-    g->stride_px = bd.stride_px;
+    g->vram      = gfx_bd.vram;
+    g->width     = gfx_bd.width;
+    g->height    = gfx_bd.height;
+    g->stride_px = gfx_bd.stride_px;
     g->backend   = GFX_BACKEND_BOCHS;
     g->format    = GFX_FMT_XRGB8888;
+    gfx_bd_active = true;
     return true;
 }
 
@@ -183,6 +189,56 @@ void gfx_present(const gfx_t *g, uint32_t x, uint32_t y,
                  uint32_t w, uint32_t h) {
     if (g->backend != GFX_BACKEND_VIRTIO_GPU || !gfx_vgpu_active) return;
     virtio_gpu_present(&gfx_vgpu, x, y, w, h);
+}
+
+bool gfx_enable_double_buffer(gfx_t *g) {
+    switch (g->backend) {
+        case GFX_BACKEND_BOCHS:
+            if (!gfx_bd_active) return false;
+            if (!bochs_enable_double_buffer(&gfx_bd)) return false;
+            /* Caller now draws to the back buffer. Point g->vram at it
+             * so existing draw code (and gfx_rect/gfx_fill) lands there. */
+            g->vram = gfx_bd.vram;
+            return true;
+
+        case GFX_BACKEND_VIRTIO_GPU:
+            /* virtio-gpu's transfer+flush already gives whole-frame
+             * presentation semantics — every gfx_present is atomic
+             * from the host's POV. No surface change needed. */
+            return true;
+
+        case GFX_BACKEND_SIMPLEFB:
+            /* simple-framebuffer has no offset register. We could keep
+             * a back buffer in regular RAM and memcpy on flip, but that
+             * memcpy itself would tear (during the copy window the host
+             * sees a partial frame). Refuse and let the caller decide
+             * whether to ship without DB. */
+            uart_puts("gfx: double-buffer not supported on simple-framebuffer\n");
+            return false;
+
+        default:
+            return false;
+    }
+}
+
+void gfx_flip(gfx_t *g) {
+    switch (g->backend) {
+        case GFX_BACKEND_BOCHS:
+            if (gfx_bd_active && gfx_bd.double_buffered) {
+                bochs_flip(&gfx_bd);
+                g->vram = gfx_bd.vram;
+                return;
+            }
+            /* DB not enabled — fall through to "present" semantics.
+             * For Bochs that's a no-op (direct-mapped) but it keeps
+             * gfx_flip safe to call from any render path. */
+            break;
+        case GFX_BACKEND_VIRTIO_GPU:
+            if (gfx_vgpu_active) virtio_gpu_present(&gfx_vgpu, 0, 0, g->width, g->height);
+            return;
+        default:
+            break;
+    }
 }
 
 void gfx_fill(const gfx_t *g, uint32_t color) {

@@ -71,6 +71,20 @@ crate works unchanged on RVVM — `tinybmp`, `tinytga`, `u8g2-fonts`,
 `embedded-canvas`, `eg-seven-segment`, etc. The HAL doesn't need to
 know about any of them.
 
+## Double-buffered
+
+The demo opts into HAL page-flipping via `gfx_enable_double_buffer`
+when the backend supports it (Bochs only — simple-framebuffer has no
+offset register). On Bochs that doubles `VIRT_HEIGHT`; the demo
+draws into the off-screen half and `gfx_flip` swaps which half is
+on-screen with one `Y_OFFSET` register write. Result: the host display
+only ever sees whole frames, no mid-render tearing.
+
+When DB succeeds the UART logs `rust-gfx: double-buffer = ON`; the
+draw loop then calls `gfx_flip` per frame and re-threads the new
+back-buffer pointer into the `Framebuffer` shim. When DB is refused
+(simplefb), the demo falls back to `gfx_present_all` and runs unchanged.
+
 ## Caveats
 
 - `time_now()` from `time.h` is `static inline` (a `rdtime` CSR

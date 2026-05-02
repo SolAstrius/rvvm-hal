@@ -100,3 +100,32 @@ void gfx_present(const gfx_t *g, uint32_t x, uint32_t y,
 static inline void gfx_present_all(const gfx_t *g) {
     gfx_present(g, 0, 0, g->width, g->height);
 }
+
+/* Switch into page-flipped double-buffer mode. After a successful
+ * return:
+ *   - g->vram points at an off-screen back buffer; consumers draw
+ *     there as before.
+ *   - gfx_flip(g) atomically swaps which buffer is on-screen. The
+ *     host display only ever sees whole frames, never a half-written
+ *     mix — fixes the tearing class of artifacts that show up when
+ *     a slow per-frame draw races the host display's scanout.
+ *   - g->vram is updated by gfx_flip() to point at the new back
+ *     buffer; consumers that cache the pointer must re-read it after
+ *     each flip.
+ * Returns false if the active backend has no native page-flip support
+ * (today: simple-framebuffer; virtio-gpu's transfer+flush is already
+ * tear-free, so gfx_enable_double_buffer trivially succeeds without
+ * changing the surface).
+ *
+ * Idempotent — safe to call twice. */
+bool gfx_enable_double_buffer(gfx_t *g);
+
+/* Atomically present the just-drawn back buffer. After the call,
+ * g->vram points at the new back; that whole-frame swap is what makes
+ * the output tear-free.
+ *
+ * If double-buffering wasn't enabled this falls back to gfx_present_all
+ * (no-op for direct-mapped backends, transfer+flush for virtio-gpu)
+ * so it's safe to use from a single render path that may or may not
+ * have double-buffering available. */
+void gfx_flip(gfx_t *g);
