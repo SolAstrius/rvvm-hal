@@ -46,16 +46,6 @@ static void on_uart_rx(uint32_t source, void *ctx) {
     }
 }
 
-/* Look up the `interrupts` u32 property on a node. RVVM emits it as a
- * single big-endian cell pointing at a PLIC source number. Returns 0
- * if absent or the node lacks an `interrupts` property. */
-static uint32_t fdt_node_irq(const fdt_t *fdt, uint32_t node_off) {
-    uint32_t len = 0;
-    const void *p = fdt_node_prop(fdt, node_off, "interrupts", &len);
-    if (!p || len < 4) return 0;
-    return fdt_read_be32(p, 0);
-}
-
 void kmain(uint64_t hartid, uint64_t fdt_addr) {
     uart_init(0);
     uart_puts("\n=== rvvm-hal probe ===\n");
@@ -141,7 +131,7 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
     if (cpus_off != UINT32_MAX) fdt_node_prop_u32(&fdt, cpus_off, "timebase-frequency", &hz);
     time_init((uintptr_t)clint_at, hz);
 
-    uint32_t uart_irq = fdt_node_irq(&fdt, u_off);
+    uint32_t uart_irq = fdt_node_interrupt(&fdt, u_off);
     if (uart_irq) {
         uart_printf("\nirq: PLIC @ %p; UART source line = %u\n",
                     (void *)(uintptr_t)plic_at, (uint64_t)uart_irq);

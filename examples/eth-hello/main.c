@@ -21,12 +21,15 @@
 #include "fdt.h"
 #include "pci.h"
 #include "time.h"
+#include "irq.h"
+#include "plat.h"
 #include "rvvm.h"
 #include "eth.h"
 
 extern char __bss_start[], __bss_end[];
 
 static eth_t nic;
+static volatile int seen;   /* frames received via the IRQ handler */
 
 /* Build a minimum ARP-who-has packet:
  *   ethernet header (14 B): dst=ff:ff:ff:ff:ff:ff, src=our MAC, ethertype=0x0806
@@ -78,6 +81,22 @@ static void dump_frame(const uint8_t *f, int len) {
     }
 }
 
+/* RX frames arrive here from the PLIC handler (eth_irq_attach), not a
+ * poll loop. Runs in interrupt context — fine for a smoke test's printf. */
+static void on_frame(const void *frame, uint32_t len, void *ctx) {
+    (void)ctx;
+    seen++;
+    dump_frame((const uint8_t *)frame, (int)len);
+}
+
+/* Periodic timer tick: just re-arm the next frame deadline so wfi keeps
+ * waking and the main loop can re-check the 5-second wall clock. Also
+ * exercises the dispatcher's registered-timer-handler path. */
+static void on_tick(void *ctx) {
+    (void)ctx;
+    plat_timer_set_deadline(time_now() + time_ticks_per_frame());
+}
+
 void kmain(uint64_t hartid, uint64_t fdt_addr) {
     uart_init(0);
     uart_puts("\n=== eth-hello (RTL8169 smoke test) ===\n");
@@ -94,6 +113,14 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
             fdt_node_reg64(&fdt, off, 0, &at, NULL);
             pci_init((uintptr_t)at);
         }
+
+        /* PLIC for the interrupt-driven RX path below. */
+        off = fdt_find_compatible(&fdt, "sifive,plic-1.0.0");
+        if (off != UINT32_MAX) {
+            uint64_t plic_at = 0;
+            fdt_node_reg64(&fdt, off, 0, &plic_at, NULL);
+            irq_init((uintptr_t)plic_at);
+        }
     }
 
     if (!eth_init(&nic)) {
@@ -107,28 +134,46 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
     printf("MAC:  %02x:%02x:%02x:%02x:%02x:%02x\n",
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-    /* RVVM's user-mode tap defaults: 10.0.2.0/24, gateway 10.0.2.2,
-     * guest 10.0.2.15. Send ARP for the gateway. */
+    /* Arm interrupts BEFORE sending anything: the gateway's ARP reply is
+     * generated synchronously by RVVM's tap, so if we transmit first the
+     * reply can land before the NIC's RX interrupt is unmasked and be
+     * missed. Frames are delivered to on_frame() through the NIC's PLIC
+     * line; a periodic timer tick (on_tick) wakes wfi so the main loop can
+     * re-check the 5-second wall clock without polling the ring. */
+    uint32_t eth_src = eth_irq_attach(&nic, on_frame, NULL);
+    irq_register_timer(on_tick, NULL);
+    irq_global_enable();
+    plat_timer_set_deadline(time_now() + time_ticks_per_frame());
+    plat_timer_irq_enable();
+    printf("\neth: %s\n",
+           eth_src ? "RX interrupt armed" : "no PLIC line — falling back to poll");
+
+    /* RVVM's user-mode tap (tap_user.c): 192.168.0.0/24, gateway
+     * 192.168.0.1, client 192.168.0.100. Send ARP for the gateway. */
     uint8_t arp[64];
     int n = build_arp_request(arp, mac,
-                              (10u<<24) | (0u<<16) | (2u<<8) | 15u,
-                              (10u<<24) | (0u<<16) | (2u<<8) |  2u);
-    printf("\nsending ARP request for 10.0.2.2 (%d bytes)...\n", n);
+                              (192u<<24) | (168u<<16) | (0u<<8) | 100u,
+                              (192u<<24) | (168u<<16) | (0u<<8) |   1u);
+    printf("sending ARP request for 192.168.0.1 (%d bytes); waiting 5s...\n", n);
     if (!eth_send(&nic, arp, (uint32_t)n)) {
         printf("eth_send failed\n");
     }
 
-    /* Drain RX for 5 seconds, print every frame. */
     uint64_t deadline = time_now() + 5 * RVVM_TIME_HZ;
-    int seen = 0;
     while (time_now() < deadline) {
-        uint8_t buf[1600];
-        int got = eth_recv(&nic, buf, sizeof(buf));
-        if (got > 0) {
-            seen++;
-            dump_frame(buf, got);
+        if (eth_src) {
+            __asm__ volatile ("wfi");   /* woken by an RX IRQ or the timer tick */
+        } else {
+            /* No interrupt line: fall back to the poll API. */
+            uint8_t buf[1600];
+            int got = eth_recv(&nic, buf, sizeof(buf));
+            if (got > 0) on_frame(buf, (uint32_t)got, NULL);
         }
     }
+    plat_timer_irq_disable();
+
     printf("\nseen %d frames total. done.\n", seen);
+    printf("eth RX irq fired %u time(s); total irqs (incl. timer ticks) = %u\n",
+           irq_count_for(eth_src), irq_count_total());
     for (;;) __asm__ volatile ("wfi");
 }
