@@ -183,6 +183,13 @@ bool fdt_node_prop_u32(const fdt_t *fdt, uint32_t node_off,
     return true;
 }
 
+uint32_t fdt_node_interrupt(const fdt_t *fdt, uint32_t node_off) {
+    uint32_t len = 0;
+    const void *p = fdt_node_prop(fdt, node_off, "interrupts", &len);
+    if (!p || len < 4) return 0;
+    return fdt_read_be32(p, 0);
+}
+
 bool fdt_node_reg64(const fdt_t *fdt, uint32_t node_off, uint32_t idx,
                     uint64_t *out_addr, uint64_t *out_size) {
     uint32_t len = 0;

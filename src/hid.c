@@ -1,5 +1,7 @@
 #include "hid.h"
 #include "i2c.h"
+#include "irq.h"
+#include "fdt.h"
 #include "rvvm.h"
 #include "uart.h"
 #include <stddef.h>
@@ -131,4 +133,56 @@ int hid_kb_poll(hid_keyboard_t *kb,
     default:
         return 0;
     }
+}
+
+/* ---- Interrupt-driven path (i2c-HID only) -------------------------- */
+
+/* RVVM exposes a single i2c-HID keyboard that raises its own PLIC line
+ * (separate from the i2c controller's) whenever an input report is
+ * ready. We bind one keyboard's forwarding callback here so the PLIC
+ * trampoline can reach it without the dispatcher carrying per-source
+ * context. */
+static struct {
+    hid_keyboard_t *kb;
+    void (*cb)(uint8_t, bool, void *);
+    void           *ctx;
+} hid_irq_bind;
+
+/* PLIC handler: drain the input report. The i2c read inside
+ * hid_kb_poll() is what lowers the device's interrupt line; the
+ * dispatcher's claim loop re-invokes us until the report queue empties,
+ * so one poll per claim is enough even when several reports are queued. */
+static void hid_irq_trampoline(uint32_t source, void *ctx) {
+    (void)source;
+    (void)ctx;
+    if (hid_irq_bind.kb) {
+        hid_kb_poll(hid_irq_bind.kb, hid_irq_bind.cb, hid_irq_bind.ctx);
+    }
+}
+
+uint32_t hid_kb_irq_attach(hid_keyboard_t *kb, const fdt_t *fdt,
+                           void (*cb)(uint8_t usage, bool pressed, void *ctx),
+                           void *ctx) {
+    /* Only the i2c-HID backend has a PLIC line. virtio-input carries no
+     * `interrupts` node here; drain it from its own queue via
+     * hid_kb_poll() on an idle/timer tick instead. */
+    if (!kb || !kb->initialised || kb->backend != HID_BACKEND_I2C) return 0;
+
+    /* Discover the keyboard's source from the device tree — never a
+     * hardcoded PLIC number. RVVM names the i2c-HID node
+     * `compatible = "hid-over-i2c"` and fills its `interrupts` cell with
+     * the source it allocated. */
+    uint32_t off = fdt_find_compatible(fdt, "hid-over-i2c");
+    if (off == UINT32_MAX) return 0;
+    uint32_t source = fdt_node_interrupt(fdt, off);
+    if (!source) return 0;
+
+    hid_irq_bind.kb  = kb;
+    hid_irq_bind.cb  = cb;
+    hid_irq_bind.ctx = ctx;
+
+    irq_register(source, hid_irq_trampoline, NULL);
+    irq_set_priority(source, 2);
+    irq_enable(source);
+    return source;
 }

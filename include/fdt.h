@@ -73,3 +73,13 @@ uint32_t fdt_find_node_named(const fdt_t *fdt, const char *name);
  * is missing or its length is < 4. */
 bool fdt_node_prop_u32(const fdt_t *fdt, uint32_t node_off,
                        const char *name, uint32_t *out);
+
+/* Read a node's `interrupts` property as a single PLIC source number.
+ * RVVM emits one big-endian cell per device pointing at the source it
+ * was allocated (see rvvm-hal/include/rvvm.h and RVVM's
+ * rvvm_irq_fdt_describe). Returns 0 if the node has no `interrupts`
+ * property — and source 0 is never valid on the PLIC, so 0 doubles as
+ * "no interrupt". This is the source you hand to irq_register /
+ * irq_enable. For PCI devices the line comes from config 0x3C instead
+ * (see pci.h pci_func_irq_line). */
+uint32_t fdt_node_interrupt(const fdt_t *fdt, uint32_t node_off);

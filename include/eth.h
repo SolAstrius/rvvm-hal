@@ -10,9 +10,10 @@
  * ethernet frame (dst MAC + src MAC + ethertype + payload) and
  * eth_recv returns the same shape.
  *
- * Polling-based v1: callers spin on eth_recv. An IRQ-driven path can
- * be wired later via PCI_CFG_INTLINE → irq_register; the descriptor
- * format stays identical.
+ * Two RX models: poll eth_recv() in a loop, or call eth_irq_attach()
+ * to have frames delivered through the PLIC (the NIC's PCI INTx line,
+ * source from config 0x3C). The descriptor format is identical either
+ * way; the IRQ handler just calls eth_recv() internally.
  *
  * Typical usage:
  *
@@ -88,3 +89,19 @@ int  eth_recv(eth_t *e, void *out, uint32_t maxlen);
 /* PHY reports link status. RVVM's tap is always "up", so this is
  * mostly for shape — real hardware could lose link. */
 bool eth_link_up(const eth_t *e);
+
+/* Callback for IRQ-delivered frames. `frame`/`len` (FCS already
+ * stripped, same as eth_recv) are valid only for the duration of the
+ * call — the buffer is driver-owned and reused, so copy anything you
+ * need to keep. Runs in interrupt context: keep it short. */
+typedef void (*eth_rx_cb_t)(const void *frame, uint32_t len, void *ctx);
+
+/* Switch RX to interrupt-driven delivery. Discovers the NIC's PLIC
+ * source from its PCI Interrupt Line (config 0x3C, auto-filled by RVVM),
+ * unmasks the RX interrupt bits, registers a PLIC handler that clears
+ * the device status and drains every ready frame into `cb`, and enables
+ * the source. The caller owns irq_init() (called first) and
+ * irq_global_enable() (called once every source is wired). Returns the
+ * PLIC source, or 0 if the NIC has no interrupt line assigned. Only one
+ * NIC may be attached at a time; eth_send()/eth_recv() remain valid. */
+uint32_t eth_irq_attach(eth_t *e, eth_rx_cb_t cb, void *ctx);

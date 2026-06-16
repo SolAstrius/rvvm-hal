@@ -73,3 +73,29 @@ bool irq_global_disable(void);
  * may wrap. */
 uint32_t irq_count_total(void);
 uint32_t irq_count_for(uint32_t source);
+
+/* ====================================================================
+ *  Local-interrupt handlers — timer and software (IPI)
+ *
+ *  External (device) interrupts dispatch by PLIC source through
+ *  irq_register(). The two other standard RISC-V interrupt causes —
+ *  timer and software — are each delivered to a single registered
+ *  handler. Registering NULL restores the dispatcher's built-in
+ *  default for that cause:
+ *
+ *    - timer:    disable the timer IE bit, so a deadline that fires
+ *                with no handler can't storm the dispatcher. (This is
+ *                why time.c's wfi-pacing masks global IE rather than
+ *                relying on a handler.)
+ *    - software: acknowledge (clear) the IPI on this hart.
+ *
+ *  Both run in interrupt context with global interrupts disabled, so
+ *  keep them short. The dispatcher always clears the pending condition
+ *  first (timer: nothing to clear at the controller — the handler must
+ *  re-arm or disarm the deadline; software: plat_ipi_ack runs before
+ *  the handler), then calls the registered handler if one is set. A
+ *  timer handler that wants periodic ticks must re-arm the deadline
+ *  itself via plat_timer_set_deadline(). */
+typedef void (*irq_local_handler_t)(void *ctx);
+void irq_register_timer(irq_local_handler_t handler, void *ctx);
+void irq_register_ipi(irq_local_handler_t handler, void *ctx);

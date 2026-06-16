@@ -36,6 +36,13 @@ static struct {
 
 static uint32_t total_irqs = 0;
 
+/* Timer + software/IPI handlers. NULL → dispatcher's built-in default
+ * for that cause (see irq.h). */
+static irq_local_handler_t timer_fn  = NULL;
+static void               *timer_ctx = NULL;
+static irq_local_handler_t ipi_fn    = NULL;
+static void               *ipi_ctx   = NULL;
+
 void irq_init(uintptr_t plic_base) {
     /* plat_init has been called already by kmain (it discovers the
      * controller base from FDT). The legacy `plic_base` argument here
@@ -68,6 +75,16 @@ void irq_register(uint32_t source, irq_handler_t handler, void *ctx) {
     if (source == 0 || source >= IRQ_HANDLERS_MAX) return;
     handlers[source].fn  = handler;
     handlers[source].ctx = ctx;
+}
+
+void irq_register_timer(irq_local_handler_t handler, void *ctx) {
+    timer_fn  = handler;
+    timer_ctx = ctx;
+}
+
+void irq_register_ipi(irq_local_handler_t handler, void *ctx) {
+    ipi_fn  = handler;
+    ipi_ctx = ctx;
 }
 
 void irq_enable(uint32_t source) {
@@ -146,25 +163,31 @@ void trap_dispatch(uint64_t mcause, uint64_t mepc, uint64_t *regs) {
             handle_external();
             return;
         } else if (code == CAUSE_TIMER) {
-            /* Caller hasn't wired a timer handler — disable the timer
-             * IE bit so we don't loop. The timer can be turned back
-             * on by re-arming the deadline + plat_timer_irq_enable. */
+            total_irqs++;
+            if (timer_fn) {
+                /* Registered handler owns the deadline: it re-arms for a
+                 * periodic tick (plat_timer_set_deadline) or disarms to
+                 * stop. The dispatcher deliberately doesn't touch the
+                 * comparator or IE bit so the handler stays in control. */
+                timer_fn(timer_ctx);
+                return;
+            }
+            /* No handler — disable the timer IE bit so a stray deadline
+             * can't loop. Re-arm + plat_timer_irq_enable turns it back
+             * on. (time.c's wfi-pacing relies on this default.) */
             uart_puts("irq: timer fired with no handler; disabling timer IE\n");
             bit = IE_TIMER_BIT;
             __asm__ volatile ("csrc " HAL_CSR(CSR_IE) ", %0" :: "r"(bit));
             return;
         } else if (code == CAUSE_SOFTWARE) {
-            /* Acknowledge the IPI on this hart and continue. The ack
-             * (plat_ipi_ack — clears MSIP / sip.SSIP depending on
-             * backend) is enough to drop the pending state; if a
-             * higher layer needs to dispatch on it, it should
-             * register its own callback. We previously disabled the
-             * soft-IE bit here as a fail-safe, but plat_ipi_ack
-             * already breaks the storm, and several use cases
-             * (cross-hart synchronisation, benchmarks) want the
-             * IRQ-on-IPI path to keep working without re-arming. */
+            /* Acknowledge (clear) the IPI on this hart first — that drops
+             * the pending state so we don't re-trap — then run the
+             * registered handler, if any. plat_ipi_ack alone breaks the
+             * storm, so a handler-less IPI is a no-op wake (several use
+             * cases — cross-hart sync, benchmarks — want exactly that). */
             plat_ipi_ack(plat_this_hart());
             total_irqs++;
+            if (ipi_fn) ipi_fn(ipi_ctx);
             return;
         } else {
             uart_printf("irq: unhandled interrupt code %u\n", code);

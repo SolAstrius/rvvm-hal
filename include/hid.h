@@ -71,3 +71,19 @@ bool hid_kb_init_fdt(hid_keyboard_t *kb, const fdt_t *fdt);
 int hid_kb_poll(hid_keyboard_t *kb,
                 void (*cb)(uint8_t usage, bool pressed, void *ctx),
                 void *ctx);
+
+/* Wire the i2c-HID keyboard's interrupt end to end so keypresses arrive
+ * via the PLIC instead of polling. Discovers the keyboard's source from
+ * the "hid-over-i2c" FDT node, registers an internal handler that drains
+ * each report (the i2c read that lowers the line) and forwards every key
+ * transition to `cb`, gives it a sensible priority, and enables the
+ * source in the PLIC. The caller still owns irq_init() (done first) and
+ * irq_global_enable() (done once all sources are wired).
+ *
+ * Returns the PLIC source number, or 0 if the keyboard has no interrupt
+ * line — i.e. the virtio-input backend, or a host that didn't describe
+ * one — in which case fall back to polling hid_kb_poll() from an idle or
+ * timer tick. Only one keyboard may be attached at a time. */
+uint32_t hid_kb_irq_attach(hid_keyboard_t *kb, const fdt_t *fdt,
+                           void (*cb)(uint8_t usage, bool pressed, void *ctx),
+                           void *ctx);

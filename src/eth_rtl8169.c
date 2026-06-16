@@ -20,6 +20,7 @@
 
 #include "eth.h"
 #include "pci.h"
+#include "irq.h"
 #include "rvvm.h"
 #include "mmio.h"
 #include "uart.h"
@@ -83,6 +84,18 @@ extern void *memset(void *, int, unsigned long);
 #define CPCR_RXCHKSUM 0x0020
 #define CPCR_TXENB    0x0001       /* TX C+ command enable */
 #define CPCR_RXENB    0x0002       /* RX C+ command enable */
+
+/* ISR/IMR bits (1 << index, matching RVVM rtl8169.c RTL8169_IRQ_*). */
+#define IRQ_ROK       0x0001   /* RX OK — frames in the ring */
+#define IRQ_RER       0x0002   /* RX error */
+#define IRQ_TOK       0x0004   /* TX OK */
+#define IRQ_TER       0x0008   /* TX error */
+#define IRQ_RDU       0x0010   /* RX descriptor unavailable (ring full) */
+#define IRQ_LCG       0x0020   /* link change */
+/* RX-side mask for the interrupt-driven path: anything that means
+ * "the device touched the RX ring". TX completion stays masked — the
+ * OWN-bit poll in eth_send() handles reclaim. */
+#define IMR_RX_SET    (IRQ_ROK | IRQ_RER | IRQ_RDU)
 
 /* PHY Status bits */
 #define PHYS_LINKSTS  0x02
@@ -230,6 +243,73 @@ void eth_mac(const eth_t *e, uint8_t out[6]) {
 bool eth_link_up(const eth_t *e) {
     if (!e->up) return false;
     return (mmio_r8(e->bar + REG_PHYS) & PHYS_LINKSTS) != 0;
+}
+
+/* ====================================================================
+ * §4b. Interrupt-driven receive
+ *
+ * RVVM raises the NIC's PCI INTx line (routed to a PLIC source the host
+ * bridge records in config 0x3C) on RX-ring activity. We unmask the RX
+ * bits in IMR, register a PLIC handler that clears ISR (W1C, which
+ * lowers the line) and drains every ready frame into the caller's
+ * callback. eth_recv()/eth_send() stay usable; the handler just calls
+ * eth_recv() in a loop.
+ * ==================================================================== */
+
+/* Single-NIC interrupt binding — RVVM ships one RTL8169. */
+static struct {
+    eth_t      *e;
+    eth_rx_cb_t cb;
+    void       *ctx;
+} eth_irq_bind;
+
+/* Driver-owned scratch for IRQ-delivered frames, so the callback sees a
+ * stable pointer without the caller plumbing a buffer through. Valid
+ * only for the duration of each cb() call. */
+static uint8_t eth_irq_frame[ETH_BUFFER_SIZE];
+
+static void eth_irq_handler(uint32_t source, void *ctx) {
+    (void)source;
+    (void)ctx;
+    eth_t *e = eth_irq_bind.e;
+    if (!e) return;
+
+    /* Read then write-back the status bits (W1C) so the device de-asserts
+     * its PCI INTx line — and thus the PLIC source — before we return.
+     * The dispatcher's claim loop re-enters us if more arrives meanwhile. */
+    uint16_t isr = R16(e, REG_ISR);
+    W16(e, REG_ISR, isr);
+
+    if (!eth_irq_bind.cb) return;
+
+    /* Both ROK and RDU mean "descriptors are ready"; drain regardless of
+     * which fired. */
+    int n;
+    while ((n = eth_recv(e, eth_irq_frame, sizeof(eth_irq_frame))) > 0) {
+        eth_irq_bind.cb(eth_irq_frame, (uint32_t)n, eth_irq_bind.ctx);
+    }
+}
+
+uint32_t eth_irq_attach(eth_t *e, eth_rx_cb_t cb, void *ctx) {
+    if (!e || !e->up) return 0;
+
+    /* Discover the source from the device's PCI Interrupt Line (RVVM
+     * auto-fills config 0x3C) — never a hardcoded PLIC number. */
+    uint32_t source = pci_func_irq_line(&e->pf);
+    if (!source) return 0;
+
+    eth_irq_bind.e   = e;
+    eth_irq_bind.cb  = cb;
+    eth_irq_bind.ctx = ctx;
+
+    /* Clear stale status, then unmask the RX bits. */
+    W16(e, REG_ISR, 0xFFFF);
+    W16(e, REG_IMR, IMR_RX_SET);
+
+    irq_register(source, eth_irq_handler, (void *)0);
+    irq_set_priority(source, 2);
+    irq_enable(source);
+    return source;
 }
 
 /* ====================================================================

@@ -110,3 +110,15 @@ static inline void pci_cfg_w16(const pci_func_t *f, uint32_t off, uint16_t v) {
 static inline void pci_cfg_w8(const pci_func_t *f, uint32_t off, uint8_t v) {
     *(volatile uint8_t *)(f->cfg + off) = v;
 }
+
+/* The PLIC source this function's INTx pin is wired to. RVVM's host
+ * bridge auto-fills config 0x3C (Interrupt Line) with the PLIC source
+ * number when the function is attached, so this is the value to hand to
+ * irq_register / irq_enable for a PCI device — the analogue of
+ * fdt_node_interrupt() for non-PCI devices. Returns 0 if the function
+ * has no interrupt pin (config 0x3D == 0) or no line assigned; 0 is
+ * never a valid PLIC source, so it doubles as "no interrupt". */
+static inline uint32_t pci_func_irq_line(const pci_func_t *f) {
+    if (pci_cfg_r8(f, PCI_CFG_INTPIN) == 0) return 0;
+    return pci_cfg_r8(f, PCI_CFG_INTLINE);
+}
