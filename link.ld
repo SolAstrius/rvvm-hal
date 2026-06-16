@@ -62,15 +62,23 @@ SECTIONS {
      * picolibc never reference these so the address space costs
      * nothing in their firmware (it doesn't get into the binary).
      *
-     * Size: 16 MiB. Comfortable headroom for any picolibc-using
-     * consumer, well under RVVM's 256 MiB default RAM. Consumers
-     * that need more can override at link time:
-     *     -Wl,--defsym=__heap_size=0x4000000
-     * — but we don't expose that knob via the script today; just
-     * adjust the literal below if a consumer outgrows it.  */
+     * Default 16 MiB — comfortable headroom for any picolibc-using
+     * consumer, well under RVVM's 256 MiB default RAM. Because the heap
+     * sits below the stacks, its size sets the firmware's address-space
+     * high-water mark and therefore the minimum -mem RVVM needs.
+     *
+     * To override, define an absolute symbol __heap_size_req. The clean
+     * way with GNU ld is -Wl,--defsym=__heap_size_req=0x200000, but
+     * zig cc rejects --defsym, so publish it from an object instead:
+     *     __asm__(".global __heap_size_req\n"
+     *             ".equ __heap_size_req, 0x200000");   // 2 MiB
+     * We read a *separate* name (not __heap_size) so the assignment
+     * below isn't self-referential — lld resolves a self-referential
+     * `x = DEFINED(x) ? x : default` to 0. */
+    __heap_size = DEFINED(__heap_size_req) ? __heap_size_req : 16M;
     . = ALIGN(16);
     __heap_start = .;
-    . += 16M;
+    . += __heap_size;
     __heap_end = .;
 
     /* One 16 KiB stack per possibly-present hart. Per-hart sp is

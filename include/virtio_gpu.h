@@ -112,8 +112,15 @@ struct virtio_gpu_resource_flush {
 /* Compile-time framebuffer ceiling. Bumping this only costs BSS, not
  * cycles — virtio-gpu commands address sub-rectangles, so a smaller
  * actual mode doesn't pay for the unused tail. 4 MiB = 1024×1024 in
- * 32-bit colour, plenty for menu UI. */
+ * 32-bit colour, plenty for menu UI.
+ *
+ * Override at HAL build time (e.g. -DVIRTIO_GPU_VRAM_BYTES=0x100000 for
+ * 1 MiB / 640×400) to reclaim BSS — useful for small-RAM targets or
+ * firmware that only ever uses the Bochs backend, where this buffer is
+ * allocated but unused. Must still cover the largest mode you set. */
+#ifndef VIRTIO_GPU_VRAM_BYTES
 #define VIRTIO_GPU_VRAM_BYTES   (4 * 1024 * 1024)
+#endif
 
 #define VIRTIO_GPU_QSIZE        16
 

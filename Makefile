@@ -44,6 +44,10 @@ HAL_MARCH_EXTS ?= zba zbb zbs zicond zicclsm zicboz
 HAL_MARCH_EXTS += $(HAL_MARCH_EXTS_EXTRA)
 CFLAGS   += $(foreach ext,$(HAL_MARCH_EXTS),-Xclang -target-feature -Xclang +$(ext))
 
+# Extra defines/flags from the consumer, e.g. tuning compile-time ceilings:
+#   make HAL_EXTRA_CFLAGS=-DVIRTIO_GPU_VRAM_BYTES=0x100000
+CFLAGS   += $(HAL_EXTRA_CFLAGS)
+
 # Privilege mode + platform backend.
 #
 #   HAL_PRIV  ∈ {m, s}     — selects mstatus/mie/... vs sstatus/sie/...
