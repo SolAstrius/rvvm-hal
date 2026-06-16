@@ -33,7 +33,19 @@ SECTIONS {
 
     .data : ALIGN(8) {
         *(.data .data.*)
+        *(.data.rel.ro .data.rel.ro.*)
         *(.sdata .sdata.*)
+        *(.sdata2 .sdata2.*)
+        /* Pull the GOT in here explicitly. If it's left as an orphan
+         * section the linker places it AFTER .bss — and because .bss is
+         * a multi-MB NOBITS region (e.g. LuaJIT's 8 MB mcode pool), a
+         * stranded PROGBITS .got above it forces `objcopy -O binary` to
+         * span the whole range and zero-fill the .bss hole into the
+         * image. Keeping every allocatable PROGBITS section below .bss
+         * makes .bss the last allocatable section, so the raw binary
+         * ends right after real content. */
+        *(.got .got.*)
+        *(.got.plt)
     } > RAM
 
     .bss : ALIGN(8) {
