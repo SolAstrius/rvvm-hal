@@ -99,3 +99,13 @@ uint32_t irq_count_for(uint32_t source);
 typedef void (*irq_local_handler_t)(void *ctx);
 void irq_register_timer(irq_local_handler_t handler, void *ctx);
 void irq_register_ipi(irq_local_handler_t handler, void *ctx);
+
+/* Enable / disable delivery of the software (IPI) interrupt to this
+ * hart's trap handler — sets / clears mie.MSIE (sie.SSIE in S-mode).
+ * irq_init() does NOT enable it (it arms only the external IE bit), so
+ * an IPI raised via plat_ipi_send() will wake wfi but won't trap into an
+ * irq_register_ipi() handler until this is called. Pair with
+ * irq_global_enable() for the mstatus.MIE side. Timer delivery has the
+ * equivalent pair in plat.h (plat_timer_irq_enable/disable). */
+void irq_ipi_enable(void);
+void irq_ipi_disable(void);

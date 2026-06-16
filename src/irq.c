@@ -87,6 +87,16 @@ void irq_register_ipi(irq_local_handler_t handler, void *ctx) {
     ipi_ctx = ctx;
 }
 
+void irq_ipi_enable(void) {
+    uintptr_t bit = IE_SOFT_BIT;
+    __asm__ volatile ("csrs " HAL_CSR(CSR_IE) ", %0" :: "r"(bit));
+}
+
+void irq_ipi_disable(void) {
+    uintptr_t bit = IE_SOFT_BIT;
+    __asm__ volatile ("csrc " HAL_CSR(CSR_IE) ", %0" :: "r"(bit));
+}
+
 void irq_enable(uint32_t source) {
     plat_intc_enable_source(source);
 }
