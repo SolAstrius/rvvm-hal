@@ -14,7 +14,7 @@ Game Boy with CGB (binjgb), ZX Spectrum 48K/128K, CHIP-8. All real
 captures, taken against the post-double-buffer build of the firmwares
 listed under [Real-world consumers](#real-world-consumers) below.</sub>
 
-The base HAL is ~2K lines of C exposing every device RVVM emulates.
+The base HAL is ~5K lines of C exposing every device RVVM emulates.
 Optional layers add picolibc, FatFs, and lwIP; each is opt-in via a
 build flag and contributes zero bytes to firmwares that don't use it
 (`-Wl,--gc-sections` trims aggressively, and `HAL_LTO=1` extends the
@@ -39,11 +39,11 @@ is a single `src/plat_<name>.c` file — see `include/plat.h`.
 | `time`   | `rdtime` CSR + CLINT mtimecmp idle-wait via `wfi` | `src/devices/riscv-aclint.c` |
 | `rtc`    | Google Goldfish RTC — `rtc_now_seconds()`, wallclock | `src/devices/rtc-goldfish.c` |
 | `atomic` | RV-A wrappers (`amoadd`/`lr`/`sc` typed inlines), `mutex_t` spinlock | — |
-| `bochs`/`gfx`/`gfx_text` | Cross-host framebuffer — Bochs Display, simple-framebuffer, or QEMU virtio-gpu auto-select. `gfx_rect`/`gfx_fill` auto-flush; consumers writing through the raw pointer call `gfx_present_all()` per frame. Opt-in **page-flipped double buffer** on Bochs (`gfx_enable_double_buffer` + `gfx_flip`) — VIRT_HEIGHT-doubling trick gives whole-frame presentation in one register write, eliminates mid-blit tearing on cart-driven cores. `tools/bdf2c/` ships a BDF→C converter; `include/fonts/cozette_8x13.h` is the pre-generated Cozette ASCII subset | `src/devices/bochs-display.c` |
+| `bochs`/`gfx`/`gfx_text` | Cross-host framebuffer — Bochs Display, simple-framebuffer, or QEMU virtio-gpu auto-select. `gfx_rect`/`gfx_fill` present immediately on virtio-gpu (no-op on the direct-mapped Bochs/simplefb backends); consumers writing through the raw pointer call `gfx_present_all()` per frame. Opt-in **page-flipped double buffer** on Bochs (`gfx_enable_double_buffer` + `gfx_flip`) — VIRT_HEIGHT-doubling trick gives whole-frame presentation in one register write, eliminates mid-blit tearing on cart-driven cores. `gfx_text` renders through a caller-supplied bitmap font (`gfx_text_t.font`) | `src/devices/bochs-display.c` |
 | `i2c`    | OpenCores I²C master — write / write-then-read, polling | `src/devices/i2c-oc.c` |
 | `hid`    | Cross-host keyboard — same `hid_kb_init_fdt`/`hid_kb_poll` API. Auto-binds to RVVM's HID-over-I²C or QEMU's virtio-input. Both backends emit USB HID usage codes. | `src/devices/i2c-hid.c` (RVVM) |
 | `nvme`   | NVMe-over-PCIe block device, chained PRP, large transfers | `src/devices/nvme.c` |
-| `audio`/`hda` | Intel HDA controller — beep widget + raw 16-bit PCM streaming, ALSA-period-aligned BDL | `src/devices/sound-hda.c` |
+| `audio`/`hda` | Intel HDA controller — beep widget + raw 16-bit PCM streaming, spec-aligned BDL split into equal slices | `src/devices/sound-hda.c` |
 | `eth`    | Realtek RTL8169 — descriptor-mode RX/TX, raw L2 frames | `src/devices/rtl8169.c` |
 | `ui`     | menu / confirm / message / file-picker primitives, dual UART + GFX backend | — |
 | `mmio`/`string` | volatile MMIO accessors, word-aligned mem*` helpers | — |
@@ -53,7 +53,7 @@ QEMU-only devices (driver auto-disables on RVVM via FDT compat miss):
 | device | provides | host availability |
 |---|---|---|
 | `fw_cfg` | QEMU fw-cfg byte-stream — selector + data port, file directory walk | QEMU virt only (`qemu,fw-cfg-mmio`) |
-| `cfi`    | CFI parallel-NOR flash — JEDEC query, size + cmdset, MMIO read | QEMU virt + most real virt-style boards (`cfi-flash`) |
+| `cfi`    | CFI parallel-NOR flash — CFI QRY query, size + cmdset, MMIO read | QEMU virt + most real virt-style boards (`cfi-flash`) |
 | `virtio` | Modern virtio-mmio transport (v2): probe, feature negotiation, split-virtqueue, push/pop/notify | QEMU virt and most virt-style boards (`virtio,mmio`) |
 | `virtio_input` | virtio-input device — drains eventq, translates Linux keycodes → USB HID usages. Used by `hid` automatically when no I²C-HID is present. | QEMU virt with `-device virtio-keyboard-device` etc |
 | `virtio_gpu`   | virtio-gpu (2D) device — display info, resource_create_2d, attach_backing, set_scanout, transfer + flush. Used by `gfx` automatically when no Bochs / simplefb is present. | QEMU virt with `-device virtio-gpu-device` |
@@ -70,7 +70,7 @@ into RVVM's source.
 | `HAL_PICOLIBC=std` | + float/double printf, `<math.h>`, 64-bit `%lld` | +20-40 KiB depending on use |
 | `HAL_FATFS=1` | FatFs r0.15a — FAT12/16/32/exFAT RW on top of NVMe | ~11 KiB for typical f_open/read/write |
 | `HAL_LWIP=1` | lwIP 2.2.1 — DHCP, ARP, ICMP, IP, TCP, UDP, DNS | ~50-150 KiB depending on use |
-| `HAL_NO_SMP=1` | strips multi-hart support (single-hart firmwares) | savings: ~3 KiB code + 64 KiB stack |
+| `HAL_NO_SMP=1` | strips multi-hart support (single-hart firmwares) | savings: ~3 KiB code + 112 KiB stack (7×16 KiB; hart 0 keeps its 16 KiB) |
 
 Each flag must be set on **both** the HAL build and your firmware's
 own CFLAGS so prototypes match symbols. Without flags, the HAL stays
@@ -253,7 +253,6 @@ RVVM-vs-QEMU comparison and captured snapshots.
 | [`examples/eth-hello/`](examples/eth-hello/) | RTL8169 raw L2: ARP request → reply, decode |
 | [`examples/net-hello/`](examples/net-hello/) | full TCP/IP — DHCP client gets an IP, UDP echo server on port 7 |
 | [`examples/ui-hello/`](examples/ui-hello/) | menu primitives — top-level menu, file picker, yes/no dialog, message banner |
-| [`examples/cozette-hello/`](examples/cozette-hello/) | Cozette 6×13 bitmap font (ASCII) rendered through `gfx_text_t` — drives `tools/bdf2c/` to regenerate `include/fonts/cozette_8x13.h` from the vendored BDF |
 | [`examples/probe-s/`](examples/probe-s/) | **S-mode under OpenSBI** — same drivers, `csrr sstatus` smoke test, Sstc-vs-ecall timer comparison |
 | [`examples/bench/`](examples/bench/) | microbenchmarks — memcpy/memset/memmove × 1 MiB, gfx_rect 1024×256, self-IPI trap entry |
 

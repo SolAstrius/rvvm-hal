@@ -58,7 +58,8 @@ CFLAGS   += $(HAL_EXTRA_CFLAGS)
 #                s_aia}     Default: m_clint (M-mode + CLINT + PLIC),
 #                            matching the stock RVVM machine.
 #
-# Today only m_clint is implemented; the other names are reserved for
+# m_clint (default, M-mode) and s_sbi (S-mode under OpenSBI, see
+# examples/probe-s) are implemented; m_clic and s_aia are reserved for
 # future backends (see include/plat.h header comment for the design).
 HAL_PRIV ?= m
 HAL_PLAT ?= m_clint
@@ -144,8 +145,9 @@ endif
 # smp.h becomes a stub returning hart_count=1 / smp_start=false. Useful
 # for: (a) firmwares targetting tiny FPGA softcores where the 128 KiB
 # stack reservation matters, (b) consumers that want the smallest
-# possible boot path. Cost otherwise is ~3 KiB of code + 64 KiB of
-# unused stack address space — both negligible on RVVM (256 MiB RAM
+# possible boot path. Cost otherwise is ~3 KiB of code + 112 KiB of
+# unused stack address space (7×16 KiB; hart 0 keeps its 16 KiB) —
+# both negligible on RVVM (256 MiB RAM
 # default), but the option exists for the cases where it isn't.
 #
 # Consumer firmwares set this in their own Makefile:

@@ -17,6 +17,12 @@
  * MSIP-pending and unparks wfi. The secondary's start.S park loop
  * polls msip after wake and, if non-zero, clears it and dispatches.
  *
+ * Under the S+SBI backend (HAL_PLAT=s_sbi) the shape is the same but
+ * the primitives differ: secondaries are brought up via sbi_hart_start
+ * (HSM) into start_s.S's _smp_secondary_entry, wakes arrive as
+ * sip.SSIP via sbi_send_ipi, and hartid comes from SBI (in tp) rather
+ * than mhartid. The smp.c logic above the plat layer is unchanged.
+ *
  * Constraints:
  *  - At most SMP_MAX_HARTS harts. Each gets a 16 KiB stack reserved
  *    by link.ld; harts beyond that bound park forever and never run
@@ -77,7 +83,13 @@ static inline void     smp_init(const fdt_t *fdt) { (void)fdt; }
 static inline uint32_t smp_hart_count(void)       { return 1; }
 static inline uint32_t smp_this_hart(void) {
     uint64_t v;
+#ifdef HAL_PRIV_S
+    /* mhartid is M-only; under SBI the hartid lives in tp (stashed by
+     * start_s.S). Reading mhartid here would trap. */
+    __asm__ volatile ("mv %0, tp" : "=r"(v));
+#else
     __asm__ volatile ("csrr %0, mhartid" : "=r"(v));
+#endif
     return (uint32_t)v;
 }
 static inline bool     smp_start(uint32_t hartid, smp_entry_t fn, void *arg) {

@@ -1,8 +1,9 @@
 /* Interrupt subsystem — RISC-V trap entry + SiFive PLIC driver +
  * dispatch table.
  *
- * Wires `mtvec` to a register-saving trampoline in `start.S` that
- * forwards into a C dispatcher. M-external interrupts (cause = 11) are
+ * Wires `CSR_TVEC` to a register-saving trampoline in `trap.S` that
+ * forwards into a C dispatcher. External interrupts (cause = 11 in
+ * M-mode, 9 in S-mode) are
  * funnelled through the PLIC's claim/complete protocol; synchronous
  * exceptions (load fault, illegal instruction, ecall, …) panic with a
  * register dump.

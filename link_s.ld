@@ -8,7 +8,7 @@
  * in M-mode, drops to S-mode, and jumps to our payload at 0x80200000
  * with a0=hartid, a1=fdt_phys.
  *
- * Layout otherwise mirrors link.ld (heap, per-hart stacks). LENGTH
+ * Layout otherwise mirrors link.ld (tunable heap, per-hart stacks). LENGTH
  * leaves the first 2 MiB to OpenSBI; the remainder of RAM is ours.
  */
 
@@ -46,9 +46,17 @@ SECTIONS {
         __bss_end = .;
     } > RAM
 
+    /* Tunable heap — same mechanism as link.ld. Default 16 MiB; override
+     * by publishing an absolute __heap_size_req symbol from an object
+     * (zig cc rejects -Wl,--defsym):
+     *     __asm__(".global __heap_size_req\n"
+     *             ".equ __heap_size_req, 0x200000");   // 2 MiB
+     * A separate name (not __heap_size) avoids lld resolving a
+     * self-referential DEFINED() to 0. */
+    __heap_size = DEFINED(__heap_size_req) ? __heap_size_req : 16M;
     . = ALIGN(16);
     __heap_start = .;
-    . += 16M;
+    . += __heap_size;
     __heap_end = .;
 
     . = ALIGN(16);

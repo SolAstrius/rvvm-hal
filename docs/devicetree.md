@@ -30,7 +30,7 @@ make -C examples/probe-s run | sed -n '/Full FDT walk:/,$p' > docs/fdt-rvvm.txt
 | `opencores,i2c-ocores` | ✓ | – | RVVM-only; the i2c-HID keyboard / mouse / tablet hang off this. QEMU's HID story is virtio-input. |
 | `fixed-clock` | ✓ | – | i2c oscillator clock node on RVVM |
 | `lekkit,rvvm` | ✓ | – | root + cpu compat string |
-| `virtio,mmio` × 8 | – | ✓ | QEMU's main device transport; we don't drive it yet |
+| `virtio,mmio` × 8 | – | ✓ | QEMU's main device transport; driven by `virtio.c` (gpu/input backends) |
 | `cfi-flash` | – | ✓ | parallel-flash NOR @ `0x20000000` (32 MiB × 2 banks) |
 | `qemu,fw-cfg-mmio` | – | ✓ | QEMU fw-cfg @ `0x10100000` |
 | `qemu,platform` (simple-bus) | – | ✓ | QEMU device-bus container @ `0x04000000` |
@@ -40,15 +40,20 @@ make -C examples/probe-s run | sed -n '/Full FDT walk:/,$p' > docs/fdt-rvvm.txt
 
 ## Same binary, two hosts
 
-The HAL's drivers all auto-bind via FDT compatible strings, so:
+Most HAL drivers default to the hardcoded `RVVM_*_BASE` constants in
+`include/rvvm.h` (those addresses are identical on both hosts). Drivers
+that genuinely match a compatible string at runtime — uart, clint/smp,
+plic, pci, i2c-HID (`opencores,i2c-ocores`/`hid-over-i2c`), and the
+virtio/cfi/fw-cfg trio — auto-bind via FDT; others (RTC, syscon) just
+poke their fixed base. So:
 
-- **Drivers in the "both" rows** activate identically on either host —
+- **Drivers in the "both" rows** work identically on either host —
   this is the `examples/probe-s` cross-host smoke path.
 - **Drivers in "RVVM only" rows** (i2c-HID via opencores-i2c) silently
   no-op on QEMU because the FDT compatible doesn't match.
-- **"QEMU only" devices** (virtio-mmio, fw-cfg, cfi-flash) have no
-  driver in the HAL today. They're future opportunities if we ever
-  want to use the HAL on real virt-style boards beyond RVVM.
+- **"QEMU only" devices** (virtio-mmio, fw-cfg, cfi-flash) are now
+  driven by `virtio.c`, `fw_cfg.c`, and `cfi.c` respectively — each
+  auto-disables on RVVM when its compatible string is absent.
 
 ## Captured dumps
 

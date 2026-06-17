@@ -1,6 +1,6 @@
 /* irq.c — privilege-portable interrupt subsystem.
  *
- * Wires CSR_TVEC to a register-saving trampoline (start.S), forwards
+ * Wires CSR_TVEC to a register-saving trampoline (trap.S), forwards
  * to a C dispatcher, and routes external interrupts through the
  * platform's claim/complete protocol.
  *
@@ -26,7 +26,7 @@
 
 #define IRQ_HANDLERS_MAX  RVVM_PLIC_SRC_LIMIT
 
-extern void __trap_entry(void);   /* start.S */
+extern void __trap_entry(void);   /* trap.S */
 
 static struct {
     irq_handler_t fn;
@@ -139,7 +139,7 @@ uint32_t irq_count_for(uint32_t source) {
 /* ====================================================================
  *  Trap dispatcher
  *
- *  Called from __trap_entry (start.S). `regs` points at the 32×8 GPR
+ *  Called from __trap_entry (trap.S). `regs` points at the 32×8 GPR
  *  save area; index N = xN; slot 0 unused; slot 2 holds the entry-time
  *  sp (pre-decrement).
  *

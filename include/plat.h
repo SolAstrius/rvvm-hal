@@ -12,14 +12,15 @@
  * header; one .c file per backend implements it. Exactly one backend
  * is linked into libhal.a, picked by the Makefile's HAL_PLAT variable.
  *
- * Backends:
+ * Backends (implemented):
  *   plat_m_clint.c   M-mode + CLINT (IPI/timer) + PLIC (intc).
- *                    Default. Today's only working build.
- *
- * Planned (file shells, not yet implemented):
+ *                    Default; the stock RVVM target.
  *   plat_s_sbi.c     S-mode payload under OpenSBI: ecall-based IPI,
- *                    sbi_set_timer, PLIC at the S-mode context. Hart
- *                    bring-up via sbi_hart_start (HSM extension).
+ *                    sbi_set_timer (with Sstc fast-path), PLIC at the
+ *                    S-mode context. Hart bring-up via sbi_hart_start
+ *                    (HSM extension). Built by examples/probe-s.
+ *
+ * Planned (not yet implemented):
  *   plat_m_clic.c    M-mode + CLIC (vectored, per-IRQ priority regs).
  *                    No claim/complete: claim() reads the hardware-
  *                    presented IRQ ID, complete() is a no-op.
@@ -52,8 +53,9 @@ void plat_init(uintptr_t intc_base, uintptr_t clint_base);
 /* Wake `hartid` from its wfi-park. The receiving hart's wake path is
  * backend-defined: M+CLINT pulses MSIP and the secondary's start.S
  * loop polls msip after wake; S+SBI sends an ecall and the secondary's
- * sip.SSIP becomes pending. Either way, secondaries clear their own
- * pending bit via plat_ipi_ack before re-entering wfi. */
+ * sip.SSIP becomes pending. The boot park loop (start.S / start_s.S)
+ * clears its own pending bit inline in asm on each wake; the runtime
+ * trap dispatcher uses plat_ipi_ack for the same purpose. */
 void plat_ipi_send(uint32_t hartid);
 
 /* Acknowledge (clear) a pending IPI on the calling hart. Called from
