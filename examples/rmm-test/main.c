@@ -59,6 +59,47 @@ static uint64_t run64(int op, double a, double b) {
     return d2u(r);
 }
 
+/* Static RMM: frm forced to RNE (fsrmi 0), rounding selected by the instruction's
+ * `,rmm` suffix. Verifies the static rm path and that it overrides a non-RMM frm. */
+static uint32_t run32_static(int op, float a, float b) {
+    float r;
+    switch (op) {
+        case OP_ADD:  __asm__ volatile("fsrmi 0\n\tfadd.s %0,%1,%2,rmm" : "=f"(r) : "f"(a), "f"(b)); break;
+        case OP_SUB:  __asm__ volatile("fsrmi 0\n\tfsub.s %0,%1,%2,rmm" : "=f"(r) : "f"(a), "f"(b)); break;
+        case OP_MUL:  __asm__ volatile("fsrmi 0\n\tfmul.s %0,%1,%2,rmm" : "=f"(r) : "f"(a), "f"(b)); break;
+        case OP_DIV:  __asm__ volatile("fsrmi 0\n\tfdiv.s %0,%1,%2,rmm" : "=f"(r) : "f"(a), "f"(b)); break;
+        default:      __asm__ volatile("fsrmi 0\n\tfsqrt.s %0,%1,rmm"   : "=f"(r) : "f"(a));         break;
+    }
+    return f2u(r);
+}
+static uint64_t run64_static(int op, double a, double b) {
+    double r;
+    switch (op) {
+        case OP_ADD:  __asm__ volatile("fsrmi 0\n\tfadd.d %0,%1,%2,rmm" : "=f"(r) : "f"(a), "f"(b)); break;
+        case OP_SUB:  __asm__ volatile("fsrmi 0\n\tfsub.d %0,%1,%2,rmm" : "=f"(r) : "f"(a), "f"(b)); break;
+        case OP_MUL:  __asm__ volatile("fsrmi 0\n\tfmul.d %0,%1,%2,rmm" : "=f"(r) : "f"(a), "f"(b)); break;
+        case OP_DIV:  __asm__ volatile("fsrmi 0\n\tfdiv.d %0,%1,%2,rmm" : "=f"(r) : "f"(a), "f"(b)); break;
+        default:      __asm__ volatile("fsrmi 0\n\tfsqrt.d %0,%1,rmm"   : "=f"(r) : "f"(a));         break;
+    }
+    return d2u(r);
+}
+
+/* Static `,rmm` while frm is a *directed* mode (RTZ): the op must still round
+ * ties-away, and the following dynamic op must still see RTZ (host mode restored).
+ * a=1.0, b=1.5*2^-24 -> exact 1 + 0.75 ulp: nearest/away rounds up, RTZ truncates.
+ * Returns 0 on success. */
+static int restore_check(void) {
+    int fails = 0;
+    const float a = u2f(0x3f800000), b = u2f(0x33c00000);
+    float rmm, rtz;
+    __asm__ volatile("fsrmi 1\n\tfadd.s %0,%1,%2,rmm" : "=f"(rmm) : "f"(a), "f"(b)); /* static RMM under frm=RTZ */
+    __asm__ volatile("fadd.s %0,%1,%2"               : "=f"(rtz) : "f"(a), "f"(b)); /* DYN -> should be RTZ */
+    if (f2u(rmm) != 0x3f800001) { uart_printf("FAIL restore: static-rmm got %x want 3f800001\n", f2u(rmm)); fails++; }
+    if (f2u(rtz) != 0x3f800000) { uart_printf("FAIL restore: frm not restored, dyn got %x want 3f800000\n", f2u(rtz)); fails++; }
+    __asm__ volatile("fsrmi 0"); /* leave frm at RNE */
+    return fails;
+}
+
 static const char *opname(int op) {
     static const char *n[] = {"add", "sub", "mul", "div", "sqrt"};
     return n[op];
@@ -77,22 +118,35 @@ void kmain(uint64_t hartid, uint64_t fdt_addr) {
     uart_puts("\n=== rmm-test (issue #204: RMM roundTiesToAway, MPFR oracle) ===\n");
 
     unsigned n = sizeof(VECS) / sizeof(VECS[0]);
-    unsigned pass = 0, fail = 0, f32 = 0, f64 = 0;
+    unsigned pass = 0, fail = 0;
     for (unsigned i = 0; i < n; i++) {
         const rmm_vec_t *v = &VECS[i];
-        uint64_t got;
-        if (v->type == 0) { got = run32(v->op, u2f((uint32_t)v->a), u2f((uint32_t)v->b)); f32++; }
-        else              { got = run64(v->op, u2d(v->a), u2d(v->b));                     f64++; }
-        if (got == v->want) {
-            pass++;
+        /* Each vector is checked twice: dynamic frm=RMM and static `,rmm` suffix. */
+        uint64_t dyn, sta;
+        if (v->type == 0) {
+            dyn = run32(v->op, u2f((uint32_t)v->a), u2f((uint32_t)v->b));
+            sta = run32_static(v->op, u2f((uint32_t)v->a), u2f((uint32_t)v->b));
         } else {
-            fail++;
-            uart_printf("FAIL #%u %s%s a=%x b=%x got=%x want=%x\n",
-                        i, opname(v->op), v->type ? ".d" : ".s",
-                        (uint32_t)v->a, (uint32_t)v->b, (uint32_t)got, (uint32_t)v->want);
+            dyn = run64(v->op, u2d(v->a), u2d(v->b));
+            sta = run64_static(v->op, u2d(v->a), u2d(v->b));
+        }
+        for (int s = 0; s < 2; s++) {
+            uint64_t got = s ? sta : dyn;
+            if (got == v->want) {
+                pass++;
+            } else {
+                fail++;
+                uart_printf("FAIL #%u %s %s%s a=%x b=%x got=%x want=%x\n",
+                            i, s ? "static" : "dyn", opname(v->op), v->type ? ".d" : ".s",
+                            (uint32_t)v->a, (uint32_t)v->b, (uint32_t)got, (uint32_t)v->want);
+            }
         }
     }
 
-    uart_printf("\nRMM-RESULT pass=%u fail=%u total=%u (f32=%u f64=%u)\n", pass, fail, n, f32, f64);
+    unsigned restore_fails = restore_check();
+    fail += restore_fails;
+
+    uart_printf("\nRMM-RESULT pass=%u fail=%u (vectors=%u x2 dyn+static, restore_fails=%u)\n",
+                pass, fail, n, restore_fails);
     hal_exit(fail == 0 ? 0 : 1);
 }
